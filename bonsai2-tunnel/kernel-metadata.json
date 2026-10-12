@@ -1,0 +1,24 @@
+{
+  "id": "essencefromexistence/bonsai2-tunnel",
+  "title": "Bonsai2 27B Tunnel",
+  "code_file": "notebook.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "keywords": [
+    "llama.cpp",
+    "ternary",
+    "bonsai",
+    "tunnel"
+  ],
+  "dataset_sources": [
+    "essencefromexistence/bonsai2-27b-ptq1",
+    "essencefromexistence/bonsai2-llamacpp-build"
+  ],
+  "kernel_sources": [],
+  "competition_sources": [],
+  "model_sources": []
+}

@@ -1,0 +1,23 @@
+{
+  "id": "essencefromexistence/bonsai2-27b-t4-bench-api",
+  "title": "Bonsai2 27B T4 Bench API",
+  "code_file": "notebook.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "keywords": [
+    "llama.cpp",
+    "ternary",
+    "bonsai",
+    "gpu"
+  ],
+  "dataset_sources": [
+    "essencefromexistence/bonsai2-27b-ptq1"
+  ],
+  "kernel_sources": [],
+  "competition_sources": [],
+  "model_sources": []
+}
