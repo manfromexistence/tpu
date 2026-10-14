@@ -63,7 +63,7 @@ if ($Version -or ($Prompt -contains '-v') -or ($Prompt -contains '--version')) {
 # Precedence: -Endpoint > $env:DQ_URL > persisted config file > built-in default.
 # The default is a live session's URL, which will go stale; the env var and the file are
 # how you point dq at a new session without editing this script.
-$DefaultEndpoint = 'https://specifications-vital-pairs-checkout.trycloudflare.com'
+$DefaultEndpoint = 'https://synopsis-auditor-builder-potato.trycloudflare.com'
 $DefaultModel    = 'Ternary-Bonsai-2-27B-PTQ1_0'
 $ConfigPath      = Join-Path $HOME '.dq.json'
 

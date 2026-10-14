@@ -117,31 +117,61 @@ log("=== stage: build ===")
 BUILD_CACHE = "bonsai2-llamacpp-build"
 FORCE_BUILD = os.environ.get("FORCE_BUILD", "") == "1"
 
-cached_bin = None
-for base in sorted(Path("/kaggle/input").glob("*")):
-    if base.name == BUILD_CACHE or BUILD_CACHE in base.name:
-        if (base / "bin" / "llama-server").exists():
-            cached_bin = base / "bin"
-            break
+# NESTED, not shallow. `/kaggle/input` contains `datasets/<owner>/<slug>/bin/llama-cli`,
+# not `<slug>/bin/llama-cli`. The shallow `for base in glob("*")` form below was the bug
+# that silently fell back to a 32-minute source build while the cache was mounted the
+# whole time -- which is exactly the 83s-to-32min regression.
+def find_cached_bin():
+    for depth in (1, 2, 3, 4):
+        for pattern in ("*/" * depth + "bin/llama-cli", "*/" * depth + "llama-cli"):
+            hits = [p for p in Path("/kaggle/input").glob(pattern)
+                    if BUILD_CACHE in str(p)]
+            if hits:
+                hits.sort(key=lambda p: len(str(p)))
+                return hits[0].parent
+    return None
+
+
+cached_bin = find_cached_bin()
+if cached_bin:
+    log(f"found cached build at {cached_bin}")
 
 if cached_bin and not FORCE_BUILD:
     log(f"found cached build at {cached_bin}")
-    # Symlink rather than copy: this container's /kaggle/input is read-only, and 84 MB of
-    # copying is pure waste when a link does the job.
-    target = Path("llama.cpp/build/bin")
-    if target.exists():
-        shutil.rmtree(target)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.symlink_to(cached_bin, target_is_directory=True)
-    log(f"linked {target} -> {cached_bin}")
-    if (Path("llama.cpp/build/bin/llama-server")).exists():
-        log("cached binaries in place; skipping clone and build entirely")
-    else:
-        log("linked but binary not visible; falling back to a full build")
-else:
-    log(f"no cached build found under /kaggle/input; building from source "
-        f"(set FORCE_BUILD=1 to force this)")
+# COPY, not symlink. /kaggle/input is mounted read-only, and a symlink to a file there
+# cannot be made executable: execve() then fails with EACCES ("Permission denied") no
+# matter how the bits are set. That is exactly what killed the previous run at 389s,
+# after the cache and tunnel had both succeeded. 84 MB of copying is the price of being
+# able to run the thing at all.
+target = Path("llama.cpp/build/bin")
+if target.exists():
+    shutil.rmtree(target)
+target.mkdir(parents=True, exist_ok=True)
+for src in sorted(cached_bin.iterdir()):
+    if src.is_file():
+        shutil.copy2(src, target / src.name)
+# The dataset upload stripped the execute bit; restore it. Without this, llama-server
+# is present but still not executable.
+for exe in ("llama-cli", "llama-server", "llama-bench"):
+    p = target / exe
+    if p.exists():
+        os.chmod(p, 0o755)
 
+# The .so files need their soname links. The dataset upload drops them, so a binary
+# that links libllama.so.0 aborts on a missing shared object rather than a missing
+# executable -- which reads as a different bug and costs a whole run.
+for versioned in sorted(target.glob("*.so.*.*.*")):
+    base, _, rest = str(versioned.name).partition(".so.")
+    major = rest.split(".")[0]
+    for alias in (f"{base}.so.{major}", f"{base}.so"):
+        link = target / alias
+        if not link.exists():
+            link.symlink_to(versioned.name)
+
+if (target / "llama-server").exists() and os.access(target / "llama-server", os.X_OK):
+    log(f"cached binaries copied to {target} and executable; skipping build")
+else:
+    log("cached binaries copied but not executable; falling back to a build")
 if not Path("llama.cpp/build/bin/llama-server").exists():
     if Path("llama.cpp").exists():
         shutil.rmtree("llama.cpp")
@@ -161,6 +191,11 @@ else:
 SERVER = Path("llama.cpp/build/bin/llama-server").resolve()
 if not SERVER.exists():
     raise RuntimeError(f"llama-server was not built at {SERVER}")
+if not os.access(SERVER, os.X_OK):
+    # The cache is read-only, so a binary reached only through the dataset path stays
+    # non-executable. Copying it into the working tree is what fixes that.
+    raise RuntimeError(f"llama-server is not executable at {SERVER}; the cache restore "
+                       f"did not copy it out of the read-only dataset mount")
 log(f"llama-server: {SERVER} ({SERVER.stat().st_size:,} bytes)")
 
 # No publish step here. The build cache is staged by the CLI-side tooling (the build

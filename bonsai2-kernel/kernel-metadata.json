@@ -1,0 +1,18 @@
+{
+  "id": "essencefromexistence/bonsai2-kernel-branch",
+  "title": "Bonsai2 Kernel Branch",
+  "code_file": "notebook.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "keywords": [],
+  "dataset_sources": [
+    "essencefromexistence/bonsai2-27b-ptq1"
+  ],
+  "kernel_sources": [],
+  "competition_sources": [],
+  "model_sources": []
+}

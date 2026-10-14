@@ -1,0 +1,19 @@
+{
+  "id": "essencefromexistence/bonsai2-mtp-test",
+  "title": "Bonsai2 MTP Test",
+  "code_file": "notebook.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "keywords": [],
+  "dataset_sources": [
+    "essencefromexistence/bonsai2-27b-ptq1",
+    "essencefromexistence/bonsai2-llamacpp-build"
+  ],
+  "kernel_sources": [],
+  "competition_sources": [],
+  "model_sources": []
+}
