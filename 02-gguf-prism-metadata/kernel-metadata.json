@@ -1,0 +1,16 @@
+{
+  "id": "essencefromexistence/tpu-gguf-prism-metadata",
+  "title": "TPU GGUF Prism Metadata (draft, unpushed)",
+  "code_file": "notebook.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_tpu": true,
+  "enable_internet": true,
+  "keywords": [],
+  "dataset_sources": ["essencefromexistence/bonsai2-27b-ptq1"],
+  "kernel_sources": [],
+  "competition_sources": [],
+  "model_sources": []
+}
