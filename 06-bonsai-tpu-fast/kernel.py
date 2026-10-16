@@ -171,7 +171,7 @@ def ffn_unit(x, W):
 
 
 gdn_batch = jax.vmap(gdn_unit, in_axes=(0, None, 0, None, 0))
-attn_batch = jax.vmap(attn_unit, in_axes=(0, None, None, 0, 0, 0))
+attn_batch = jax.vmap(attn_unit, in_axes=(0, None, None, 0, 0, None))
 ffn_batch = jax.vmap(ffn_unit, in_axes=(0, None))
 logits_batch = jax.vmap(lambda h: chunked_logits(rms(h, O_NORM, EPS)))
 
@@ -259,7 +259,7 @@ for i_step in range(N_GEN):
     for b in range(B):
         if cur[b] != tok.eos:
             gen[b].append(int(cur[b]))
-    x = jax.vmap(embed)(cur)
+    x = jnp.stack([embed(int(c)) for c in cur])
     x = step(x, pos)
     cur = np.asarray(jnp.argmax(logits_batch(x), axis=-1))
     pos = pos + 1
