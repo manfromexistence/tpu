@@ -90,9 +90,21 @@ inputs + accumulated MXU with a computed LHS). This is a Mosaic lowering
 bug/limitation in jax 0.11.2 + libtpu 0.0.50 on v5e, not a shape or dtype
 error in the kernel.
 
+Two orientations were tried with the same result, and the second is
+diagnostic:
+
+- RHS = token matrix, LHS = unpacked W: fails legalize, `rhs_contracting=[0]`.
+- LHS = token matrix, RHS = unpacked W transposed (the canonical docs
+  orientation, so the only change from the working docs kernel is a computed
+  RHS): fails legalize with `rhs_contracting=[1]` even though the contraction
+  must be on rhs dim 0. The compiler is contracting the wrong RHS dimension
+  and `transpose_rhs=false`, i.e. the `.T`/computed-operand layout is not
+  being honoured -- the same root cause in both orientations.
+
 Scripts (all in `G:\Temp\UserTemp\opencode\colab_run\`): `test_fused_mm.py`,
-`test_fused_mm2.py`, `test_fused_mm3.py`, `test_bisect_mm.py`,
-`test_bisect2.py`, `test_bisect3.py`, `test_bisect4.py`, `test_base_mm.py`.
+`test_fused_mm2.py`, `test_fused_mm3.py`, `test_fused_mm4.py`,
+`test_bisect_mm.py`, `test_bisect2.py`, `test_bisect3.py`,
+`test_bisect4.py`, `test_base_mm.py`.
 
 ## 5. Consequence for the throughput target
 
