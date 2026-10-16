@@ -177,7 +177,8 @@ def ffn_unit(x, TI, SC):
 gdn_batch = jax.vmap(gdn_unit, in_axes=(0, None, None, 0, None, 0))
 attn_batch = jax.vmap(attn_unit, in_axes=(0, None, None, None, 0, 0, None))
 ffn_batch = jax.vmap(ffn_unit, in_axes=(0, None, None))
-logits_batch = jax.vmap(lambda h: chunked_logits(rms(h, O_NORM, EPS)))
+logits_batch = jax.vmap(
+    lambda h: chunked_logits(rms(h, O_NORM, EPS), chunk=32768))
 
 # %% cell [markdown]
 """
