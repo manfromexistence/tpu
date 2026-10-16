@@ -151,10 +151,8 @@ def attn_unit(x, W, SW, K, V, pos):
             SW["attn_k_norm.weight"], EPS)
     v = (xf @ W["attn_v.weight"]).reshape(HKV, HD)
     q, k = rope(q, pos), rope(k, pos)
-
-    K = jax.lax.dynamic_update_slice(K, k[None, None, :, :], (pos, 0, 0, 0))
-    V = jax.lax.dynamic_update_slice(V, v[None, None, :, :], (pos, 0, 0, 0))
-
+    K = jax.lax.dynamic_update_slice(K, k[None, :, :], (pos, 0, 0))
+    V = jax.lax.dynamic_update_slice(V, v[None, :, :], (pos, 0, 0))
     scores = jnp.einsum("hd,thd->ht", q, K[:, _kidx, :]) * _isscale
     allow = jnp.arange(K.shape[0]) <= pos
     scores = jnp.where(allow[None, :], scores, -1e30)
