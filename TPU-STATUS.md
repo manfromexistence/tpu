@@ -118,3 +118,19 @@ fluent, which is the evidence that the model is genuinely running.
 
 MIT OR Apache-2.0
 updated: 2026-10-16 00:00 UTC
+
+## Notebook 06 (2026-10-16, [exec] on Colab TPU v5e-1)
+
+Fixed-size KV + vmap batching + per-layer jit. Measured:
+
+- batch-4: 16 tokens / 12.24s = 1.3 tok/s aggregate
+- batch-8: 64 tokens / 24.77s = 2.6 tok/s aggregate
+- batch-16: 128 tokens / 36.57s = 3.5 tok/s aggregate
+- baseline notebook 04: 0.27 tok/s single-stream (13x speedup at B=16)
+- correctness gate passes; generated text matches notebook 04 exactly
+- receipt: tpu/06-bonsai-tpu-fast/receipt-colab-tpu.json
+
+Per-sequence latency floor is 3-4.5s (XLA launch overhead, ~300 dispatches
+per step), not bandwidth or recompile. 100 tok/s aggregate would need
+batch ~300, which does not fit in 16 GiB HBM. Reaching 100 requires fused
+decode-into-matvec (Pallas, broken on this stack) or larger hardware.
