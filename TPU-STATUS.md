@@ -134,3 +134,53 @@ Per-sequence latency floor is 3-4.5s (XLA launch overhead, ~300 dispatches
 per step), not bandwidth or recompile. 100 tok/s aggregate would need
 batch ~300, which does not fit in 16 GiB HBM. Reaching 100 requires fused
 decode-into-matvec (Pallas, broken on this stack) or larger hardware.
+
+## Fused PTQ1_0 matmul in Pallas: works (2026-10-18, [exec] on v5e-1)
+
+The clause "Pallas, broken on this stack" above is **withdrawn**. The fused
+ternary kernel compiles, runs and is numerically correct on real weights.
+Its cost was two bugs in the test harness, documented in
+`tpu/07-pallas-fusion/FINDINGS.md` §4:
+
+- `pl.BlockSpec` index maps return **block** indices, not element offsets;
+  passing offsets walked 128x outside the array and halted the core with
+  `BoundsCheck ... dma.hbm_to_vmem`. That was the whole of the
+  "multi-program grids are broken" theory.
+- Importing notebook 04 sets `jax_default_matmul_precision="highest"`, and
+  that alone makes Mosaic reject the bf16 MXU op with `Bad rhs type`.
+
+A third trap cost the numeric debugging: `dec.reshape((IN, OUT), order="F")`
+is not `dec.reshape(-1).reshape((IN, OUT), order="F")` -- they disagree in
+89% of entries on layer-0 qkv, and `04-bonsai-tpu-forward/kernel.py:280-281`
+uses the second form.
+
+Validated (`tpu/10-bonsai-fused/kernel.py`), layer 0 `blk.0.attn_qkv.weight`
+(IN 5120, OUT 10240, 52.4 M params):
+
+| Check | Result |
+| --- | --- |
+| tiled reconstruction vs the model's weight matrix | maxdiff **0.0** exact |
+| fused kernel vs `W_ref @ x`, B=128 | 1.65e-02 on `ref|max|` 5.46 |
+| GGUF blocks matched to the proven decode | 409600/409600 exact |
+
+Cost is **flat in batch**: 4.04 ms at B=1, 4.18 ms at B=128 for that one
+projection. That is per-forward-pass weight work, so batching amortises it
+for free. Extrapolated over the ~27.0 B ternary parameters (x515), ~2.15 s of
+weight work per forward pass:
+
+| Batch | Projected aggregate |
+| --- | --- |
+| 1 | ~0.5 tok/s |
+| 32 | ~15 tok/s |
+| 128 | ~59 tok/s |
+
+So this path beats notebook 09's 4.0 tok/s but does not by itself reach 100,
+and the GDN recurrence caps batch near 32 anyway. The unpack currently runs
+at ~12.8 Gtrit/s against an 11.5 MB/traversal packed-weight stream -- about
+300x below the HBM roofline, so the remaining 6-7x has to come out of the
+unpack, not from a larger batch. Two live hypotheses and the experiment that
+separates them are in `tpu/07-pallas-fusion/FINDINGS.md` §7. A host-side
+2-bit repack was tried and measured **7.5x slower**, so it is dead.
+
+MIT OR Apache-2.0
+updated: 2026-10-18 00:00 UTC

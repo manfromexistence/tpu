@@ -1,11 +1,15 @@
-# Pallas fusion on Colab TPU v5e-1: findings (2026-10-16)
+# Pallas fusion on Colab TPU v5e-1: findings
 
-Goal: fuse PTQ1_0 ternary decode into the matmul so no bf16/fp32 weight
-ever touches HBM (the 27.5-108 GB/step traffic that caps notebooks 06/08/09
-at 3.5-4.0 tok/s). This file records exactly what works, what does not, and
-the evidence, so the next attempt starts from the frontier instead of from
-zero. All results `[exec]` on Colab TPU v5e-1, jax/jaxlib 0.11.2, libtpu
-0.0.50.
+Goal: fuse PTQ1_0 ternary decode into the matmul so no bf16/fp32 weight ever
+touches HBM — the 27.5-108 GB/step traffic that caps notebooks 06/08/09 at
+3.5-4.0 tok/s. This file records exactly what works, what does not, and the
+evidence. All results `[exec]` on Colab TPU v5e-1, jax/jaxlib 0.11.2, libtpu
+0.0.50, unless noted.
+
+**Status 2026-10-18: the fused kernel works and is numerically validated on
+real layer-0 weights.** §1-§3 and §6 stand as written. §4 and §5 of the first
+revision blamed a Mosaic lowering bug; that conclusion was wrong. It is
+retracted in §4, and §7 records what the working kernel costs.
 
 ## 1. Environment prerequisites (both mandatory)
 
@@ -21,6 +25,9 @@ zero. All results `[exec]` on Colab TPU v5e-1, jax/jaxlib 0.11.2, libtpu
   has halted unexpectedly", even for kernels that previously worked. After a
   halt, `colab restart-kernel` restores normal operation. This masqueraded as
   "multi-program grids are broken" for a long time.
+- Compile failures (`failed to legalize`, `Bad rhs type`) do **not** wedge the
+  core, so compile-only variants can be batched into one process. Runtime
+  halts must be isolated one per restart.
 
 ## 2. The correct Pallas grid API on this stack
 
@@ -38,7 +45,8 @@ Two forms of `pl.pallas_call` behave very differently:
   maxdiff 0.0000").
 
 So: use the `PrefetchScalarGridSpec` + `dimension_semantics` form, and
-restart the kernel after any halt.
+restart the kernel after any halt. `("parallel", "parallel", "arbitrary")` is
+accepted; `"sequential"` is rejected on this stack.
 
 ## 3. What legalizes in isolation
 
@@ -53,6 +61,7 @@ form) shows each is fine. `test_bisect_mm.py` / `test_bisect4.py`:
 - LHS built with `jnp.concatenate` -> OK
 
 Also verified independently:
+
 - Pallas single-pass PTQ1_0 unpack is **bit-exact** vs the proven XLA
   decoder (`proof_unpack_exact.py`, maxdiff `0.000e+00`).
 - Minimum dynamic-slice alignment inside a Pallas program is 128
@@ -62,89 +71,186 @@ Also verified independently:
   pass scales as a separate pre-decoded input.
 - `pl.dot` is removed in jax 0.12; use `@` / `jnp.dot`.
 
-## 4. What does NOT legalize (the current blocker)
+## 4. Retraction: the blocker was two bugs in my harness
 
-The assembled fused kernel -- one program per (out-tile, in-block), unpack
-PTQ1_0 to bf16 in VMEM, MXU-accumulate -- compiles every part but fails at
+The first revision of this file recorded "failed to legalize operation
+'tpu.matmul'" as a Mosaic lowering bug and listed the eliminated causes. That
+diagnosis was wrong. Both failure modes had mundane causes in the surrounding
+harness, and both are now fixed.
 
-    failed to legalize operation 'tpu.matmul'
-    tpu.matmul ... <dimension_numbers = <[1], [0], [0], [1], [0, 0, 1, 1],
-      [], []>, precision = fp32, transpose_lhs = false,
-      transpose_rhs = false> :
-      (vector<128x128xbf16>, vector<128x128xbf16>, vector<128x128xf32>)
-      -> vector<128x128xf32>
+### 4.1 `pl.BlockSpec` index maps return **block** indices, not element offsets
 
-Notably the operands are already the ideal shapes/dtypes ([128,128] bf16
-into f32), and the same `jnp.dot` with the same block sizes works in the
-docs `matmul`. Excluded as causes by direct experiment:
+This was the whole of the `RuntimeUnexpectedCoreHalt` /
+`BoundsCheck 2 [deref of opnd#0] for dma.hbm_to_vmem` family, and therefore
+the whole of the "multi-program grids are broken" theory.
 
-- op types: slice / transpose / concat / cast each legalize in isolation
-- operand count: fails with 3, 4 and 5 inputs
-- power-vector inputs: fails with powers unrolled inline (no array input)
-- scratch materialization of LHS: still fails
-- packed-data block rank: 1-D and 2-D blocks both fail
-- unpack arithmetic: fails with the unpack stubbed to a trivial op
+Pallas multiplies the index your index-map returns by the block shape to get
+the element offset. Passing an element offset (e.g. `(m*BPC + k)*TC`) makes
+the row offset get multiplied by 128 a second time, which walks far outside
+the array and halts the core. Two more rows of arithmetic did not look like a
+bug because the numbers stayed in range for `m = k = 0`.
 
-So the failure is specific to the *combination* (grid + indexed packed
-inputs + accumulated MXU with a computed LHS). This is a Mosaic lowering
-bug/limitation in jax 0.11.2 + libtpu 0.0.50 on v5e, not a shape or dtype
-error in the kernel.
+Correct index maps for the fused kernel, with the packed tile array laid out
+in block order:
 
-Two orientations were tried with the same result, and the second is
-diagnostic:
+```python
+pl.BlockSpec((TC, B),   lambda m, n, k: (k, 0)),            # x^T  [IN, B]
+pl.BlockSpec((TC, 128), lambda m, n, k: (m * BPC + k, 0)),  # rep  [ROWS, 128]
+pl.BlockSpec((TC,),     lambda m, n, k: (m * BPC + k,)),    # scale [ROWS]
+out_specs=pl.BlockSpec((TC, B), lambda m, n, k: (m, 0)),    # out  [OUT, B]
+grid=(TOUT, 1, BPC)
+```
 
-- RHS = token matrix, LHS = unpacked W: fails legalize, `rhs_contracting=[0]`.
-- LHS = token matrix, RHS = unpacked W transposed (the canonical docs
-  orientation, so the only change from the working docs kernel is a computed
-  RHS): fails legalize with `rhs_contracting=[1]` even though the contraction
-  must be on rhs dim 0. The compiler is contracting the wrong RHS dimension
-  and `transpose_rhs=false`, i.e. the `.T`/computed-operand layout is not
-  being honoured -- the same root cause in both orientations.
+### 4.2 A global `jax.config` side effect from importing notebook 04
 
-Scripts (all in `G:\Temp\UserTemp\opencode\colab_run\`): `test_fused_mm.py`,
-`test_fused_mm2.py`, `test_fused_mm3.py`, `test_fused_mm4.py`,
-`test_bisect_mm.py`, `test_bisect2.py`, `test_bisect3.py`,
-`test_bisect4.py`, `test_base_mm.py`.
+`tpu/04-bonsai-tpu-forward/kernel.py:47` runs
 
-## 5. Consequence for the throughput target
+```python
+jax.config.update("jax_default_matmul_precision", "highest")
+```
 
-Measured ceiling without Pallas fusion: **4.0 tok/s aggregate** (notebook 09,
-int8 + `lax.scan`, batch-8, correct output). The traffic roofline says a
-fused decode could reach ~100+ tok/s aggregate, but the fused MXU kernel does
-not compile on this stack. Remaining options, in order of feasibility:
+at import time. Any process that imports the GGUF reader from notebook 04 —
+which every test harness does — silently gets `precision=highest` on every
+matmul, and Mosaic then rejects the bf16 MXU op with
 
-1. Re-test the fused kernel on a jax/libtpu pair where the docs matmul and
-   the computed-LHS matmul both lower (try a newer libtpu, or v6e) -- the
-   kernel is written and only the lowering is in question.
-2. Emit the unpack as a separate Pallas kernel (which is proven bit-exact)
-   and feed a standard docs-style matmul from HBM: loses the traffic win
-   (that is notebook 09), so not a path to 100.
-3. Non-Pallas fusion via XLA only: measured to give ~5% per step
-   (notebook 09), i.e. not a path to 100 either.
+```
+Mosaic failed to compile TPU kernel ... Bad rhs type: 128, 128
+```
 
-The hardware is capable (v5e: 197 TFLOP/s bf16, 820 GB/s); the block is the
-Mosaic lowering of the fused kernel on this specific runtime.
+That is the error the first revision attributed to the unpack. Stubbing,
+slicing, transposing and concatenating could never have fixed it: the kernel
+was already legal. Fix: reset the config after the exec, and pin
+`precision=jax.lax.Precision.DEFAULT` explicitly on the `dot_general` so the
+kernel does not depend on ambient state.
 
-MIT OR Apache-2.0
-updated: 2026-10-16 00:00 UTC
+```python
+exec(compile(src.split("n_layers = ws.meta")[0], "04m.py", "exec"), ns)
+jax.config.update("jax_default_matmul_precision", "default")
+```
 
-## 6. The HF blog pattern DOES work on this stack (control experiment)
+### 4.3 A reference-matrix reshape trap
+
+The two obvious spellings of the Fortran reshape are **not** the same
+function, and the 89%-of-elements-apart difference looks exactly like a
+broken kernel:
+
+```python
+dec.reshape((IN, OUT), order="F")              # form A  -- NOT what the model uses
+dec.reshape(-1).reshape((IN, OUT), order="F")  # form B  -- what the model uses
+```
+
+Measured on layer-0 qkv: `maxdiff 1.371e-01`, **46,780,136 of 52,428,800
+entries differ (89%)**. Form B sends destination `(i, j)` to `flat[i + j*IN]`
+of the C-flattened decode; form A sends it to element `i + j*IN` of the
+source traversed in F order. `tpu/04-bonsai-tpu-forward/kernel.py:280-281`
+(`layer_weights`) uses form B via `flat[o:o+n].reshape(dims, order="F")`.
+
+Comparing the fused kernel against form A produced a `rel ~ 2` disagreement
+that survived several rounds of debugging and very nearly got the working
+kernel rewritten. Anything that reshapes a decoded weight must use form B.
+
+## 5. What is now proven
+
+Harness: `tpu/10-bonsai-fused/kernel.py`, one run on Colab TPU v5e-1.
+Reference is the model's own convention (§4.3 form B).
+
+| Check | Result |
+| --- | --- |
+| Tiled reconstruction vs model convention | **maxdiff 0.0** (exact) |
+| Fused kernel vs `W_ref @ x`, B=128 | maxdiff 1.65e-02 on `ref|max|` 5.46 |
+| Fused kernel vs `W_ref @ x`, B=32 | maxdiff 1.22e-02 |
+| Fused kernel vs `W_ref @ x`, B=1 | maxdiff 6.31e-03 |
+| Kernel faithfulness to its host layout | maxdiff 1.70e-02 |
+| Accumulation test (all-ones LHS) | 2.19e-01 on `ref|max|` 86.2 |
+| Real GGUF blocks matched to the decode, all 409600 | 409600/409600 exact |
+
+The kernel — one program per (out-tile, in-block), unpack PTQ1_0 to bf16 in
+VMEM, MXU-accumulate over the in-block dim, W as the MXU LHS — compiles, runs
+and is numerically correct. **W as the MXU LHS and an in-kernel unpack are
+both legal.** The earlier claims that a computed-operand layout "is not
+MXU-consumable" and that "the in-kernel transpose is illegal" are withdrawn.
+
+## 6. The HF fused INT8 pattern also works (control experiment)
 
 `proof_hf_int8_fused_works.py` reproduces the Hugging Face "Fused INT8
 Weight-Only Quantization in Pallas" kernel verbatim (jax 0.11.2, libtpu
 0.0.50, v5e-1): int8 weights + bf16 scales, in-kernel cast to bf16, then
-`jax.lax.dot_general(..., (((1,),(0,)),((),())))`. Result:
-`build+exec 0.1s`, maxdiff 0.25, 0.28 ms for 512x512. So the fused
-dequant-matmul pattern itself is sound on this runtime; the block is the
-ternary PTQ1_0 unpack specifically (complex int32 bit extraction +
-transpose + concat) -- its output layout is not MXU-consumable even after
-materializing to a scratch ref.
+`jax.lax.dot_general(..., (((1,),(0,)),((),())))`. Result: `build+exec 0.1s`,
+maxdiff 0.25, 0.28 ms for 512x512.
 
-This pins the remaining work to ONE of:
-  (a) simplify the PTQ1_0 unpack so the bf16 result is produced in a
-      contiguous, non-transposed layout the MXU accepts (e.g. re-pack the
-      trits on the host into [K, N] int8 first, then reuse the HF kernel);
-  (b) try a different jax/libtpu pair where the computed-operand lowering
-      works (the kernel is otherwise complete);
-  (c) accept 4.0 tok/s on TPU, or move to GPU + llama.cpp (25+ tok/s T4,
-      100+ on H100 today).
+This is a control, not a path: it was never the blocker, and it is not
+faster. It stays in the record because it proves the fused dequant-matmul
+pattern is sound on this runtime.
+
+## 7. Measured cost of the fused ternary matmul
+
+Layer 0 `blk.0.attn_qkv.weight`, `dims [5120, 10240]` -> IN 5120, OUT 10240,
+TC 128, BPC 40, TOUT 80, ROWS 409600, raw 11,468,800 bytes (`OUT*BPC*28`).
+
+| Variant | B | ms | notes |
+| --- | --- | --- | --- |
+| V1: 28-byte GGUF blocks, in-kernel unpack | 128 | 4.18 | correct |
+| V1 | 32 | 4.07 | correct |
+| V1 | 1 | 4.04 | correct |
+| V2: host 2-bit repack, trivial decode | 128 | 30.73 | correct, **7.5x slower** |
+
+Two facts matter:
+
+1. **The cost is flat in batch size.** 4.04 ms at B=1 and 4.18 ms at B=128
+   means the time is set entirely by the per-forward-pass weight work, not by
+   the matmul. Batching amortises it for free.
+2. **V2 is 7.5x slower, so no host repack is needed or wanted.** The GGUF
+   28-byte blocks go straight in. V2's block is 32 bytes per row, below the
+   128-byte minimum DMA alignment established in §3, which is the likely
+   cause — but the conclusion holds either way: keep the packed 5.9 GB in HBM
+   and unpack in-kernel.
+
+Rates, `[exec]`:
+
+| Quantity | Value |
+| --- | --- |
+| packed bytes streamed per traversal | 11.5 MB |
+| effective packed-weight bandwidth | ~2.8 GB/s (vs ~820 GB/s HBM) |
+| trits unpacked | 52.4 M |
+| effective unpack rate | ~12.8 Gtrit/s |
+
+So the kernel runs roughly 300x below the HBM roofline: this is compute and
+program-overhead bound, not traffic bound. Two live hypotheses, not yet
+separated:
+
+- the `stack`/`reshape`/`concatenate` layout shuffles inside the unpack
+  dominate the int32 arithmetic;
+- 3200 sequential programs at ~1.3 us each is simply program-launch
+  overhead, and the fix is fewer, larger programs.
+
+The V2 result argues mildly for the second (V2 does less arithmetic and is
+slower). The separating experiment: keep the arithmetic identical and vary
+only the number of programs (e.g. 2 or 4 in-blocks per program, or a 256-row
+out tile).
+
+## 8. Consequence for the throughput target
+
+Extrapolating layer-0 qkv's measured cost per parameter to the ~27.0 B
+ternary parameters in the 5.9 GB GGUF (x515) gives ~2.15 s of weight work per
+forward pass, excluding attention, GDN, norms and sampling:
+
+| Batch | Projected aggregate |
+| --- | --- |
+| 1 | ~0.5 tok/s |
+| 32 | ~15 tok/s |
+| 128 | ~59 tok/s |
+
+Batch is the free lever but the GDN recurrence caps it near 32, so ~15 tok/s
+is where the current kernel lands — better than notebook 09's 4.0 tok/s, and
+nowhere near 100. The remaining 6-7x has to come out of the unpack itself
+(§7), which is where the 300x headroom sits. Next steps, in order:
+
+1. Run the separating experiment in §7 (program count vs layout shuffles).
+2. Re-optimise the unpack with the answer, then re-measure tok/s.
+3. Only then wire the fused kernel into the 64-layer scan.
+
+The hardware is capable (v5e: 197 TFLOP/s bf16, 820 GB/s). The kernel is
+correct. The open question is purely how fast the unpack can be made.
+
+MIT OR Apache-2.0
+updated: 2026-10-18 00:00 UTC
