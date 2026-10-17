@@ -127,3 +127,24 @@ Mosaic lowering of the fused kernel on this specific runtime.
 
 MIT OR Apache-2.0
 updated: 2026-10-16 00:00 UTC
+
+## 6. The HF blog pattern DOES work on this stack (control experiment)
+
+`proof_hf_int8_fused_works.py` reproduces the Hugging Face "Fused INT8
+Weight-Only Quantization in Pallas" kernel verbatim (jax 0.11.2, libtpu
+0.0.50, v5e-1): int8 weights + bf16 scales, in-kernel cast to bf16, then
+`jax.lax.dot_general(..., (((1,),(0,)),((),())))`. Result:
+`build+exec 0.1s`, maxdiff 0.25, 0.28 ms for 512x512. So the fused
+dequant-matmul pattern itself is sound on this runtime; the block is the
+ternary PTQ1_0 unpack specifically (complex int32 bit extraction +
+transpose + concat) -- its output layout is not MXU-consumable even after
+materializing to a scratch ref.
+
+This pins the remaining work to ONE of:
+  (a) simplify the PTQ1_0 unpack so the bf16 result is produced in a
+      contiguous, non-transposed layout the MXU accepts (e.g. re-pack the
+      trits on the host into [K, N] int8 first, then reuse the HF kernel);
+  (b) try a different jax/libtpu pair where the computed-operand lowering
+      works (the kernel is otherwise complete);
+  (c) accept 4.0 tok/s on TPU, or move to GPU + llama.cpp (25+ tok/s T4,
+      100+ on H100 today).
