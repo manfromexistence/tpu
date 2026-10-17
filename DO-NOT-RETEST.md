@@ -108,5 +108,44 @@ So the open question is not "is the kernel correct" -- it is settled -- but
 **how the 28-byte-row layout performs**, because that is the only one that
 fits without a host repack.
 
+## 7. The fused full model, measured twice -- and one refuted hypothesis
+
+Both runs executed the real 64-layer model on Colab TPU v5e-1, jax 0.11.2 /
+libtpu 0.0.50, and both printed the same correctness gate (first token `11`,
+`','`) and the same generated text as notebook 04. Receipts:
+`11-bonsai-fused-full/receipt-colab-tpu.json`,
+`12-bonsai-bigdma/receipt-colab-tpu.json`.
+
+| config | tok/s (B=32) | ms/step | steps/forward |
+| --- | --- | --- | --- |
+| nb 11, one in-block per step | **15.30** | **2091** | 1.64 M |
+| nb 12, eight in-blocks per step | 13.30 | 2406 | 410 K |
+
+**Do not retest "the k-loop is the bottleneck".** It is refuted. Cutting the
+sequential step count 4x made the model 15 % slower, so the ~2 s per forward
+pass does not scale with the number of weight DMAs.
+
+**Do not retest "a cheaper unpack will show up in the wall clock".** NB-11's
+decode was replaced by `(3*((q*p) & 255)) >> 8`, proven bit-identical to the
+old shift chain across all 256 byte values x 5 powers (0 mismatches), ~1.4x
+fewer ops on the hot path. Measured effect: none.
+
+Excluded so far: HBM bandwidth (2.8 GB/s effective vs ~820 GB/s peak), the MXU
+(batch 16 -> 32 costs 4 %), DMA count (above), unpack instruction count at the
+1.4x scale (above). Still unseparated: the unpack/cast/scale chain itself
+versus Mosaic's scheduling of it. Settle that with the isolating experiment in
+`07-pallas-fusion/FINDINGS.md` 7, not with another full-model run.
+
+**Also settled: scoped VMEM is 16 MB and unpack intermediates scale with the
+in-block width.** A block covering all `BPC` in-blocks needs 74 MB and fails
+with `E1001: CompileTimeScopedVmemOom`. Keep the per-step tile small
+(`(TO, KB, 28)` was 32 KB per intermediate).
+
+**And: restart the kernel between runs.** `colab exec` reuses the process, so
+the previous run's 6 GB of tiles stay resident and produce a
+`RuntimeBufferAllocationFailure` about 80 MB short of the true limit. That
+signature is not evidence about the batch size.
+
 MIT OR Apache-2.0
-updated: 2026-10-18 00:00 UTC
+updated: 2026-10-18 05:25 UTC
+

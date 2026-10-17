@@ -6,11 +6,34 @@ real generation.
 
 ## Status
 
-Written, syntax-checked, **not yet executed**. The run is blocked on Colab
-capacity, not on the code: `colab usage` reports `Current balance: 0.00
-compute units`, and every `colab new --tpu v5e1` returns `Service
-Unavailable`. Re-run it the moment units exist -- everything below is in
-place.
+**Executed 2026-10-18 on Colab TPU v5e-1. 15.30 tok/s aggregate at batch 32,
+2091 ms/step.** This is the fastest measured configuration on this track.
+
+- correctness gate: first token `11` (`','`), exactly what notebook 08 expects
+- generated text is byte-for-byte the same as notebook 04's proof string:
+  `", I'm a student in the University of the West of England (UWE) Bristol,
+  and I are writing a formal letter to the Dean of the School"`
+- tile build 5.66 GiB on device in 8.7 s; compile + first step 10.0 s
+- receipt: `receipt-colab-tpu.json`
+
+Prior best was 4.0 tok/s (notebook 09, int8, batch 8). Two separate levers got
+here: consuming the packed bytes in place instead of expanding weights into
+HBM, and batch 32, which is nearly free (batch 16 -> 2004 ms, batch 32 ->
+2091 ms).
+
+### What this run disproved
+
+The 1.26 us per in-block step was *not* per-DMA overhead. Notebook 12 cut the
+sequential step count 4x and came out 15 % slower (13.30 tok/s). A
+provably-identical 1.4x cheaper unpack also changed the wall clock by nothing.
+See `../12-bonsai-bigdma/README.md` for the table and what is still excluded.
+
+### Note on the receipt
+
+`first_token` in `receipt-colab-tpu.json` reads 314 and is wrong -- it was
+captured after generation, so it is the last token. The gate line printed
+`first token 11 ','`. The field is annotated in place rather than silently
+edited; notebook 12 has the corrected capture.
 
 ## What it does
 
@@ -59,4 +82,4 @@ Needs `/content/04.py` (the uploaded copy of notebook 04) and the GGUF at
 `N_TOKENS` (32), `PROMPT` (`Hello`).
 
 MIT OR Apache-2.0
-updated: 2026-10-18 00:00 UTC
+updated: 2026-10-18 05:30 UTC

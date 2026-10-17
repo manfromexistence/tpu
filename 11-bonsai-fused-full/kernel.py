@@ -42,7 +42,7 @@ print(f"jax {jax.__version__} | backend {jax.default_backend()}")
 
 PROMPT = os.environ.get("PROMPT", "Hello")
 N_GEN = int(os.environ.get("N_TOKENS", "32"))
-BATCH = int(os.environ.get("BATCH", "16"))
+BATCH = int(os.environ.get("BATCH", "32"))
 MAX_T = int(os.environ.get("MAX_T", "256"))
 
 # %% cell [markdown]
@@ -103,17 +103,28 @@ POW3 = (1, 3, 9, 27, 81)
 QH3 = (1, 3, 9, 27)
 
 
+# `_t(v)` is exactly `(3*v) >> 8`:
+#   floor(floor(floor(v + floor(v/2))/2)/64) = floor(0.75v/64) = floor(1.5v/128)
+#   floor(3v/256)                                                   = floor(1.5v/128)
+# Same integers, so the 5-op shift chain collapses to mul+shift, and for p=1
+# the `& 0xFF` is dead (q < 256 already). Two operations off the hot path.
+def _d(q, p):
+    if p == 1:
+        return (q * 3) >> 8
+    return (((q * p) & 0xFF) * 3) >> 8
+
+
 def _kernel(xt_ref, rep_ref, sc_ref, z_ref, acc_ref, *, nsteps):
     b = rep_ref[...]
     qs = b[:, :24].astype(jnp.int32)
     qh = b[:, 24:26].astype(jnp.int32)
-    t80 = jnp.stack([_t(qs[:, :16] * p) for p in POW3], 1).reshape(TC, 80)
-    t40 = jnp.stack([_t(qs[:, 16:] * p) for p in POW3], 1).reshape(TC, 40)
+    t80 = jnp.stack([_d(qs[:, :16], p) for p in POW3], 1).reshape(TC, 80)
+    t40 = jnp.stack([_d(qs[:, 16:], p) for p in POW3], 1).reshape(TC, 40)
     h = jnp.concatenate([
-        jnp.concatenate([_t(qh[:, :1] * p), _t(qh[:, 1:] * p)], -1)
+        jnp.concatenate([_d(qh[:, :1], p), _d(qh[:, 1:], p)], -1)
         for p in QH3], -1).reshape(TC, 8)
-    w = (jnp.concatenate([t80, t40, h], -1).astype(jnp.float32) - 1.0) \
-        .astype(jnp.bfloat16) * sc_ref[...].reshape(TC, 1)
+    w = (jnp.concatenate([t80, t40, h], -1) - 1).astype(jnp.bfloat16) \
+        * sc_ref[...].reshape(TC, 1)
     @pl.when(pl.program_id(2) == 0)
     def _z():
         acc_ref[...] = jnp.zeros_like(acc_ref)
@@ -303,7 +314,7 @@ def ffn_core(h, T):
 
 
 @jax.jit
-def gdn_step(x, T, S, hist, an, pan, beta_w, alpha_w, aa, dtb, cv1, sn, norm_w):
+def gdn_step(x, T, S, hist, an, pan, beta_w, alpha_w, aa, dtb, cv1, sn):
     h = rms(x, an, EPS)
     a, S, hist = gdn_core(h, T, {"ssm_beta.weight": beta_w, "ssm_alpha.weight": alpha_w,
                                  "ssm_a": aa, "ssm_dt.bias": dtb,
@@ -402,7 +413,7 @@ print(f"aggregate tok/s  : {agg:.2f}")
 print(f"per-step         : {t_gen/N_GEN*1000:.0f} ms -> "
       f"{t_gen/N_GEN*1000/B:.1f} ms/token")
 print(f"baseline nb 04   : 0.27 tok/s | nb 06: 3.5 | nb 08: 1.5 | nb 09: 4.0")
-print(f"sample           : {tok.decode(gen[:48])!r}")
+print(f"sample           : {tok.decode(gen[::B][:48])!r}")
 
 json.dump({
     "notebook": "11-bonsai-fused-full",
