@@ -7,9 +7,12 @@ credentials.
 
 **Bonsai 2 27B runs on a Colab TPU v5e-1** (notebook 04, first run 2026-10-16:
 greedy-decoded coherent English for 40 tokens at 0.27 tok/s), and the current
-best is **15.30 tok/s aggregate at batch 32** with every ternary projection
+best is **29.66 tok/s aggregate at batch 32** with every ternary projection
 served by a fused PTQ1_0 Pallas kernel that unpacks the weights in place
-(notebook 11, `[exec]` 2026-10-18). llama.cpp cannot use TPU silicon at all --
+(notebook 11, `[exec]` 2026-10-18). That is 1.94x the 15.31 tok/s the same
+notebook measured earlier in the same session, and the gain came from spelling
+the in-kernel decode so Mosaic does not pay for a layout conversion — not from
+any change to the algorithm. llama.cpp cannot use TPU silicon at all --
 it has no
 TPU backend, so on a TPU VM it silently runs on the host CPU -- which is
 why this is a from-scratch JAX forward pass rather than a build of the
@@ -90,8 +93,9 @@ contract, and foldable linears. Two modes: **A** = offline BF16
 | 08 | `bonsai-scan` | One `lax.scan` over all 64 layers | `[exec]` batch 4 = 1.5 tok/s |
 | 09 | `bonsai-int8` | int8 weights | `[exec]` batch 8 = 4.0 tok/s |
 | 10 | `bonsai-fused` | Fused PTQ1_0 ternary matmul in Pallas | `[exec]` tile vs the model's matrix maxdiff **0.0**; 4.04 ms per 52.4 M params, flat in batch |
-| 11 | `bonsai-fused-full` | The real 64-layer model, fully fused | `[exec]` **batch 32 = 15.30 tok/s**, gate `first token 11` |
+| 11 | `bonsai-fused-full` | The real 64-layer model, fully fused | `[exec]` **batch 32 = 29.66 tok/s**, gate `first token 11`; 15.31 -> 29.66 in one session with no algorithmic change |
 | 12 | `bonsai-bigdma` | 8 in-blocks per grid step | `[exec]` 13.30 tok/s -- the per-DMA-overhead hypothesis, refuted |
+| 13 | `cost-sweep` | What the fused kernel's cost actually is | `[exec]` decode is 82 % of the projection and it is **data movement**: `concatenate` 1.68x, int16 1.34x, broadcast order 4.2x worse |
 
 Measured on Colab TPU v5e-1 (`TPU v5 lite`, jax 0.7.2, 15.75 GiB HBM
 limit, Pallas present): **FWHT-1024 = 0.295 ms/call** (20-call mean,
@@ -131,4 +135,4 @@ then every FWHT test uses random signs and says so.
 - Do not delete build outputs or caches to free space; report instead.
 
 MIT OR Apache-2.0
-updated: 2026-10-18 03:42 UTC
+updated: 2026-10-18 04:20 UTC

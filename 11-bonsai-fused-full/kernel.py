@@ -67,7 +67,12 @@ NEMB, NFF, EPS, VOCAB = cfg["n_embd"], cfg["n_ff"], cfg["eps"], cfg["vocab"]
 H, HKV, HD = cfg["n_head"], cfg["n_head_kv"], cfg["head_dim"]
 ST, NV, NK, REP = cfg["state"], cfg["n_v"], cfg["n_k"], cfg["rep"]
 KEY_DIM, CONV, CONV_DIM = cfg["key_dim"], cfg["conv"], cfg["conv_dim"]
-TC, BLK, QK = 128, 28, 128
+# `TC` is the out-tile height. 128 is the reference layout (one PTQ1_0 block
+# wide). It is not magic: the tile is `(TC, 28)` over a `(ROWS, 28)` array, which
+# the legal-block rule allows for any `TC` divisible by 8 with a rank-1 `(TC,)`
+# scale block that is a power of two >= 128. Notebook 13 measured the decode at
+# 1.67x and the whole projection at 1.22x going from 128 to 512.
+TC, BLK, QK = int(os.environ.get("TC", "128")), 28, 128
 
 fold, l2n, rms, rope = fw["fold"], fw["l2n"], fw["rms"], fw["rope"]
 SIGNS, R, BLOCK = fw["SIGNS"], fw["R"], fw["BLOCK"]
@@ -81,7 +86,7 @@ embed = fw["embed"]
 GIDX = [i for i in range(NL) if IS_RECR[i]]
 AIDX = [i for i in range(NL) if not IS_RECR[i]]
 print(f"{NL} layers: {len(GIDX)} gdn + {len(AIDX)} attn | "
-      f"n_embd {NEMB} n_ff {NFF} vocab {VOCAB}")
+      f"n_embd {NEMB} n_ff {NFF} vocab {VOCAB} | out-tile TC {TC}")
 
 # %% cell [markdown]
 """
@@ -116,10 +121,19 @@ def _d(q, p):
 
 def _kernel(xt_ref, rep_ref, sc_ref, z_ref, acc_ref, *, nsteps):
     b = rep_ref[...]
-    qs = b[:, :24].astype(jnp.int32)
-    qh = b[:, 24:26].astype(jnp.int32)
-    t80 = jnp.stack([_d(qs[:, :16], p) for p in POW3], 1).reshape(TC, 80)
-    t40 = jnp.stack([_d(qs[:, 16:], p) for p in POW3], 1).reshape(TC, 40)
+    # int16, not int32: every intermediate fits (max `q*p` is 255*81 = 20655,
+    # then `& 255` -> `*3` -> `>> 8` only decreases it), so this is exactly
+    # equivalent arithmetic in narrower lanes. Notebook 13: 1.866 ms int32
+    # against 1.393 ms int16 for the same decode, TO=512.
+    qs = b[:, :24].astype(jnp.int16)
+    qh = b[:, 24:26].astype(jnp.int16)
+    # NOT `jnp.stack([...], 1).reshape(TC, 80)`. Both spellings put power `p` of
+    # byte `b` in column `16*p + b`, but Mosaic prices the 3-D reshape as a
+    # layout conversion: notebook 13 measured 3.129 ms (stack) against 1.872 ms
+    # (concatenate) for the identical trits, TO=512. A byte-major broadcast
+    # order is worse still, 7.9 ms.
+    t80 = jnp.concatenate([_d(qs[:, :16], p) for p in POW3], -1)
+    t40 = jnp.concatenate([_d(qs[:, 16:], p) for p in POW3], -1)
     h = jnp.concatenate([
         jnp.concatenate([_d(qh[:, :1], p), _d(qh[:, 1:], p)], -1)
         for p in QH3], -1).reshape(TC, 8)
@@ -146,7 +160,7 @@ def _pallas(geom, B):
         grid_spec=pltpu.PrefetchScalarGridSpec(
             num_scalar_prefetch=0,
             in_specs=[
-                pl.BlockSpec((TC, B), lambda m, n, k: (k, 0)),
+                pl.BlockSpec((QK, B), lambda m, n, k: (k, 0)),
                 pl.BlockSpec((TC, BLK), lambda m, n, k: (m * BPC + k, 0)),
                 pl.BlockSpec((TC,), lambda m, n, k: (m * BPC + k,)),
             ],
@@ -190,8 +204,12 @@ def build_layer(il):
         b0 = (off // QK) * BLK
         b1 = ((off + n) // QK) * BLK
         IN, OUT = int(dims[0]), int(dims[1])
-        assert IN % TC == 0 and OUT % TC == 0, f"{short} {dims} not TC-aligned"
-        BPC, TOUT = IN // TC, OUT // TC
+        # Two independent numbers. The in-dim is blocked 128 trits to a PTQ1_0
+        # block whatever TC is -- the k-loop walks physical blocks because `x`
+        # is tiled 128 dims at a time. TC only sets the out-tile height. At
+        # TC=128 the two coincide, which is what hid this until TC=512.
+        assert IN % QK == 0 and OUT % TC == 0, f"{short} {dims} not aligned"
+        BPC, TOUT = IN // QK, OUT // TC
         r8 = blob[b0:b1]
         assert len(r8) == OUT * BPC * BLK, f"{short} {len(r8)} != {OUT*BPC*BLK}"
         rv = r8.reshape(OUT, BPC, BLK).reshape(TOUT, TC, BPC, BLK) \
@@ -391,8 +409,9 @@ t0 = time.perf_counter()
 x = step(xg, jnp.int32(0), S, C, K, V)
 lg = logits_b(x)
 cur = np.asarray(jnp.argmax(lg, axis=0))
+first_tok = int(cur[0])                    # captured here: `cur` is reassigned below
 print(f"prefill (compile + 1 step): {time.perf_counter()-t0:.1f}s")
-print(f"gate: first token {int(cur[0])} {tok.decode([int(cur[0])])!r} "
+print(f"gate: first token {first_tok} {tok.decode([first_tok])!r} "
       f"(notebook 08 expects 11 ',')")
 
 gen = []
@@ -422,10 +441,12 @@ json.dump({
     "batch": B, "n_gen": N_GEN, "prompt": PROMPT,
     "weights": "PTQ1_0 consumed as packed bytes, in-kernel unpack",
     "layout": "28-byte rows (raw GGUF block layout)",
+    "out_tile_tc": TC,
+    "decode": "concatenate spelling (not stack+reshape), int16 lanes",
     "decode_seconds": round(t_gen, 3),
     "aggregate_tok_per_s": round(agg, 2),
     "ms_per_step": round(t_gen / N_GEN * 1000, 1),
-    "first_token": int(cur[0]),
+    "first_token": first_tok,
     "claim": "[exec] measured on Colab TPU v5e-1",
 }, open(os.environ.get("RECEIPT", "/content/receipt-colab-tpu-11.json"), "w"),
     indent=2)

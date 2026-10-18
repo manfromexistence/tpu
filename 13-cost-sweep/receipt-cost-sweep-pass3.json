@@ -1,0 +1,208 @@
+{
+  "notebook": "13-cost-sweep",
+  "backend": "tpu",
+  "jax": "0.11.2",
+  "batch": 32,
+  "weight": "blk.0.attn_qkv.weight",
+  "trits": 52428800,
+  "rows": [
+    {
+      "label": "read  f32 (sum)",
+      "ms": 0.3612371599956532,
+      "gb_s": 708.6757076793552
+    },
+    {
+      "label": "copy  f32 (x*2)",
+      "ms": 0.8211047199984023,
+      "gb_s": 623.5501849276866
+    },
+    {
+      "label": "read  int8 (sum)",
+      "ms": 0.18424017999677744,
+      "gb_s": 694.7453047551237
+    },
+    {
+      "label": "write f32 (zeros)",
+      "ms": 0.41385096000340127,
+      "gb_s": 618.5801767812645
+    },
+    {
+      "label": "dispatch floor (us)",
+      "ms": 0.05507539500058556,
+      "gb_s": 0
+    },
+    {
+      "label": "dot   TO=128  (nb 11 config)",
+      "ms": 3.8372055999843724,
+      "gb_s": 2.988841671670319,
+      "gtrit_s": 13.663276213350029,
+      "programs": 3200,
+      "trit_per_prog": 16384,
+      "compile_s": 0.4
+    },
+    {
+      "label": "dot   TO=64",
+      "ms": NaN,
+      "error": "ValueError: The Pallas TPU lowering currently requires that rank 1 block shapes, either 1) the first (and only) dimension of the block shape is equal to the first (and only) dimension of the array shape, or 2) the first (and only) dimension of the block shape is a multiple of 1024, or 3) the first (and only) di"
+    },
+    {
+      "label": "dot   TO=256",
+      "ms": 3.4435547000157385,
+      "gb_s": 3.3305119270931236,
+      "gtrit_s": 15.225197380997136,
+      "programs": 1600,
+      "trit_per_prog": 32768,
+      "compile_s": 0.4
+    },
+    {
+      "label": "dot   TO=512",
+      "ms": 3.289398600009008,
+      "gb_s": 3.486594783608345,
+      "gtrit_s": 15.938719010781005,
+      "programs": 800,
+      "trit_per_prog": 65536,
+      "compile_s": 0.6
+    },
+    {
+      "label": "dot   TO=1024",
+      "ms": 3.2544217000122444,
+      "gb_s": 3.5240669640190916,
+      "gtrit_s": 16.110020406944418,
+      "programs": 400,
+      "trit_per_prog": 131072,
+      "compile_s": 1.3
+    },
+    {
+      "label": "dma   TO=128",
+      "ms": 0.5043219000071986,
+      "gb_s": 22.741031075264225,
+      "gtrit_s": 103.95899920120789,
+      "programs": 3200,
+      "trit_per_prog": 16384,
+      "compile_s": 0.2
+    },
+    {
+      "label": "dma   TO=512",
+      "ms": 0.28828099998463586,
+      "gb_s": 39.783405776347514,
+      "gtrit_s": 181.86699783473148,
+      "programs": 800,
+      "trit_per_prog": 65536,
+      "compile_s": 0.2
+    },
+    {
+      "label": "dec   TO=128",
+      "ms": 3.4457638000276347,
+      "gb_s": 3.3283767157539996,
+      "gtrit_s": 15.215436414875427,
+      "programs": 3200,
+      "trit_per_prog": 16384,
+      "compile_s": 0.2
+    },
+    {
+      "label": "dec   TO=512",
+      "ms": 3.125854799964145,
+      "gb_s": 3.6690123930681464,
+      "gtrit_s": 16.77262808259724,
+      "programs": 800,
+      "trit_per_prog": 65536,
+      "compile_s": 0.6
+    },
+    {
+      "label": "cast  TO=128",
+      "ms": 0.6184820000271429,
+      "gb_s": 18.543466098442117,
+      "gtrit_s": 84.77013073573538,
+      "programs": 3200,
+      "trit_per_prog": 16384,
+      "compile_s": 0.2
+    },
+    {
+      "label": "cast  TO=512",
+      "ms": 0.3901290000158042,
+      "gb_s": 29.397455712175706,
+      "gtrit_s": 134.3883689699461,
+      "programs": 800,
+      "trit_per_prog": 65536,
+      "compile_s": 0.2
+    },
+    {
+      "label": "dec_nc TO=128",
+      "ms": 3.329456699975708,
+      "gb_s": 3.444646088980126,
+      "gtrit_s": 15.746953549623433,
+      "programs": 3200,
+      "trit_per_prog": 16384,
+      "compile_s": 0.2
+    },
+    {
+      "label": "dec_nc TO=512",
+      "ms": 3.1274637000024086,
+      "gb_s": 3.66712489740206,
+      "gtrit_s": 16.763999530980847,
+      "programs": 800,
+      "trit_per_prog": 65536,
+      "compile_s": 0.7
+    },
+    {
+      "label": "dec2  TO=128 (concat spelling)",
+      "ms": 2.2691757999837137,
+      "gb_s": 5.054169888504149,
+      "gtrit_s": 23.104776633161823,
+      "programs": 3200,
+      "trit_per_prog": 16384,
+      "compile_s": 0.2
+    },
+    {
+      "label": "dec2  TO=512 (concat spelling)",
+      "ms": 1.8663358000139851,
+      "gb_s": 6.145089217017677,
+      "gtrit_s": 28.091836420652236,
+      "programs": 800,
+      "trit_per_prog": 65536,
+      "compile_s": 0.2
+    },
+    {
+      "label": "dec2  TO=1024 (concat spelling)",
+      "ms": 1.821937800013984,
+      "gb_s": 6.294836190298029,
+      "gtrit_s": 28.776394012790988,
+      "programs": 400,
+      "trit_per_prog": 131072,
+      "compile_s": 0.4
+    },
+    {
+      "label": "dec3  TO=512 (broadcast spelling)",
+      "ms": 7.915862299978472,
+      "gb_s": 1.4488377343339072,
+      "gtrit_s": 6.623258214097861,
+      "programs": 800,
+      "trit_per_prog": 65536,
+      "compile_s": 1.4
+    },
+    {
+      "label": "dec3  TO=1024 (broadcast spelling)",
+      "ms": NaN,
+      "error": "JaxRuntimeError: RESOURCE_EXHAUSTED: E1001: CompileTimeScopedVmemOom:\nRan out of memory in memory space vmem while allocating on stack for %tpu_custom_call.1 = bf16[10240,32]{1,0:T(8,128)(2,1)S(1)} custom-call(%copy.xt_ref, %copy.1.rep_ref, %custom-call), custom_call_target=\"tpu_custom_call\", operand_layout_constrai"
+    },
+    {
+      "label": "dec16 TO=512 (int16, identical values)",
+      "ms": 1.393032799978755,
+      "gb_s": 8.232971973219085,
+      "gtrit_s": 37.63644330614439,
+      "programs": 800,
+      "trit_per_prog": 65536,
+      "compile_s": 0.3
+    },
+    {
+      "label": "dec16 TO=1024 (int16, identical values)",
+      "ms": 1.3612289000320743,
+      "gb_s": 8.425328025088039,
+      "gtrit_s": 38.51578525754532,
+      "programs": 400,
+      "trit_per_prog": 131072,
+      "compile_s": 0.4
+    }
+  ],
+  "claim": "[exec] measured on Colab TPU v5e-1"
+}

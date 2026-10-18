@@ -2,19 +2,29 @@
 
 ## Current best (2026-10-18)
 
-**15.30 tok/s aggregate, batch 32, 2091 ms/step** — the real 64-layer model with
+**29.66 tok/s aggregate, batch 32, 1079 ms/step** — the real 64-layer model with
 every ternary projection served by a fused PTQ1_0 Pallas kernel that unpacks
 the weights in place. Notebook 11, `[exec]` on Colab TPU v5e-1, jax 0.11.2 /
 libtpu 0.0.50. Correctness gate `first token 11 ','`; generated text identical
 to the notebook 04 proof string below.
+
+This is 1.94x the 15.31 tok/s this same notebook measured earlier in the same
+session, from three changes that leave the weights, the tile order, the kernels
+and the output text untouched: spell the decode with `concatenate` instead of
+`stack(axis=1).reshape` (1.33x), raise the out-tile to TC 512 (1.21x), and run
+the decode at int16 width (1.20x). The mechanism and the ablations behind each
+are in `DO-NOT-RETEST.md` §7.
 
 | step | tok/s | receipt |
 | --- | --- | --- |
 | nb 04 single-stream | 0.27 | first-ever run |
 | nb 06 fixed-KV, batch 16 | 3.5 | |
 | nb 09 int8, batch 8 | 4.0 | |
-| **nb 11 fused, batch 32** | **15.30** | `11-bonsai-fused-full/receipt-colab-tpu.json` |
+| nb 11 fused, batch 32, `stack` decode, TC 128 | 15.31 | `11-bonsai-fused-full/receipt-baseline-dec-stack-tc128.json` |
 | nb 12 windowed DMA, batch 32 | 13.30 | refuted hypothesis, see below |
+| nb 11, `concatenate` decode, TC 128, int32 | 20.35 | `11-bonsai-fused-full/receipt-dec-cat-int32-tc128.json` |
+| nb 11, `concatenate` decode, TC 512, int32 | 24.68 | log only (receipt overwritten) |
+| **nb 11, `concatenate` decode, TC 512, int16** | **29.66** | `11-bonsai-fused-full/receipt-dec-cat-int16-tc512.json` |
 
 ## Result (2026-10-17, first TPU run of this model)
 
@@ -202,22 +212,36 @@ against the real model and **both failed**:
 | per-DMA overhead in the k-loop | nb 12, 8 in-blocks/step (4x fewer steps) | 13.30 tok/s, 15 % *slower* |
 | the 5-op unpack chain | nb 11, provably-identical `(3*((q*p)&255))>>8` | no change in wall clock |
 
-What is excluded is HBM bandwidth (2.8 GB/s effective against ~820 GB/s peak),
-the MXU (batch 16 -> 32 costs 4 %), DMA count, and the unpack instruction count
-at the 1.4x scale. What is not separated is the unpack/cast/scale chain itself
-versus Mosaic's scheduling of it -- and that is settled **inside the next
-full-model run**, never by a session on one tensor: `tpu/README.md` §6,
-`DO-NOT-RETEST.md` §0.
+Notebook 13 then separated the survivors directly, on real layer-0 weights,
+with the model number already in the log (`DO-NOT-RETEST.md` §7):
 
-The whole model now runs at 27.0 Gtrit / 2.09 s = **12.9 Gtrit/s**, against a
-5.9 GB/traversal packed stream that the HBM roofline would carry in 7.2 ms --
-about 300x below it. Batch cannot close that: the GDN recurrence holds ~151 MB
-of f32 state per sequence per 48 layers, so batch 32 is already ~4.8 GB next to
-6.1 GB of tiles and bf16 state would be needed to go further. The experiment that
-separates the two remaining candidates is in `tpu/07-pallas-fusion/FINDINGS.md` §7. A host-side
-2-bit repack was tried and measured **7.5x slower** and is parked, but that
-measurement used a broadcast-vector shift for extraction, so it does not settle
-the row stride on its own -- the repack is unproven, not disproven.
+| Candidate | Measurement | Verdict |
+| --- | --- | --- |
+| program count / DMA count | `TO` 128 -> 1024 is 3200 -> 400 programs | 1.18x, saturates by 512 — not the lever |
+| HBM bandwidth | 709 GB/s read, 623 GB/s copy on this slice | ~86 % of spec — not the constraint |
+| the decode's spelling | `stack(axis=1).reshape` -> `concatenate(-1)`, same trits | **1.68x on the decode, 1.33x on the model** |
+| the decode's lane width | int32 -> int16, all intermediates fit | 1.34x on the decode, 1.20x on the model |
+| a byte-major broadcast order | one broadcast per group, needs `perm_ctg` | 4.2x *worse* |
+
+**The decode was the bottleneck, and what made it slow was data movement, not
+arithmetic.** Cutting its instructions 1.4x had cost nothing; changing how the
+columns are produced bought 1.68x. That also re-explains the parked 2-bit
+repack: its `(b >> 2j) & 3` extraction over a broadcast axis is the same class
+of column interleave, so its 7.5x penalty is evidence about the extraction
+pattern rather than about 2-bit packing.
+
+The whole model now runs at 26.9 Gtrit / 1.079 s = **24.9 Gtrit/s**, against a
+per-projection decode ceiling of 38.5 Gtrit/s (`dec16`, TO=1024) and a pure-DMA
+floor of 182 Gtrit/s. Two levers remain, in this order:
+
+1. **Batch.** Kernel cost is flat in batch (4.04 ms at B=1, 4.18 ms at B=128), so
+   throughput scales with batch at constant step time. The GDN recurrence holds
+   ~151 MB of f32 state per sequence per 48 layers: batch 64 needs 9.7 GB next
+   to 6.1 GB of tiles and does not fit in 15.75 GiB. bf16 state fits at ~4.8 GB
+   and changes the recurrence's numerics, which is why it has not been done
+   blind. This is the largest single lever left.
+2. **`TC = 1024`.** 1.361 ms against 1.393 ms for the decode and 3.254 against
+   3.289 ms for the whole projection: 2-3 % for a one-line change, not applied.
 
 MIT OR Apache-2.0
-updated: 2026-10-18 03:42 UTC
+updated: 2026-10-18 04:20 UTC

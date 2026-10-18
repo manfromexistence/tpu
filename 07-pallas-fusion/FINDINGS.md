@@ -214,21 +214,25 @@ Rates, `[exec]`:
 | trits unpacked | 52.4 M |
 | effective unpack rate | ~12.8 Gtrit/s |
 
-So the kernel runs roughly 300x below the HBM roofline: this is compute and
-program-overhead bound, not traffic bound. Two live hypotheses, not yet
-separated:
+So the kernel ran roughly 300x below the HBM roofline: compute and
+program-overhead bound, not traffic bound. **Both live hypotheses have since
+been separated by notebook 13, and the first one was right** (2026-10-18):
 
-- the `stack`/`reshape`/`concatenate` layout shuffles inside the unpack
-  dominate the int32 arithmetic;
-- 3200 sequential programs at ~1.3 us each is simply program-launch
-  overhead, and the fix is fewer, larger programs.
+| Hypothesis | Measurement | Verdict |
+| --- | --- | --- |
+| the layout shuffles inside the unpack dominate | same trits in the same columns, `concatenate(-1)` for `stack(axis=1).reshape`: 3.126 -> 1.866 ms at TO=512 | **yes — 1.68x** |
+| 3200 programs at ~1.3 us each is launch overhead | `TO` 128 -> 1024 is 3200 -> 400 programs: 3.834 -> 3.249 ms | 1.18x, saturating by 512 — minor |
 
-The V2 result argues mildly for the second (V2 does less arithmetic and is
-slower). The separating experiment -- keep the arithmetic identical and vary
-only the number of programs (e.g. 2 or 4 in-blocks per program, or a 256-row
-out tile) -- is **not a run on its own**. It is measured inside the next
-full-model run, after the model number is in the log: `tpu/README.md` §6,
-`DO-NOT-RETEST.md` §0.
+The V2 row above argues *for* the first one, not against it. V2 did less
+arithmetic and was 7.5x slower because it still had to place trits into
+columns, and its extraction was a broadcast of exactly the kind notebook 13
+measures at 4.2x worse than the concatenated spelling. V2's penalty is
+evidence about the extraction pattern, not about 2-bit packing.
+
+The fix, measured on the model rather than on one tensor: spelling the decode
+with `concatenate` is 1.33x end to end, raising the out-tile to 512 is 1.21x,
+and doing the decode in int16 lanes is 1.20x. Notebook 11 now measures
+**29.66 tok/s** against the 15.31 in the table above.
 
 ## 8. Consequence for the throughput target
 
@@ -246,9 +250,18 @@ forward pass, excluding attention, GDN, norms and sampling:
 | 128 | ~59 tok/s | **retracted** -- assumed a 27.0 GB layout (`DO-NOT-RETEST.md` 6) |
 
 Batch is the free lever but the GDN recurrence caps it near 32, so ~15 tok/s
-is where the current kernel lands -- better than notebook 09's 4.0 tok/s, and
-nowhere near 100. The remaining 6-7x has to come out of the unpack itself
-(§7), which is where the 300x headroom sits.
+was where the kernel landed in nb 11 -- better than notebook 09's 4.0 tok/s,
+and nowhere near 100. The remaining gap was in the unpack itself (§7), and
+**notebook 13 plus a second nb 11 session closed part of it: 29.66 tok/s now**,
+with the decode's spelling and lane width the only changes to the kernel.
+
+The headroom that remains is smaller than the 300x figure suggests. At 29.66
+tok/s the model runs 26.9 Gtrit/s; notebook 13's best decode cell for this
+weight is 38.5 Gtrit/s and its pure weight-DMA floor is 182 Gtrit/s. So a
+projection whose arithmetic were free would still spend ~0.45 ms of its current
+~1.5 ms on the load alone, and 100 tok/s at batch 32 needs 0.36 ms per
+equivalent projection -- **below the load floor**. 100 tok/s therefore requires
+a bigger batch (bf16 GDN state, `TPU-STATUS.md`), not a faster decode.
 
 **How to pursue it -- rewritten 2026-10-18.** This used to read "run the
 separating experiment, re-optimise, and *only then* wire the fused kernel into
@@ -274,4 +287,4 @@ kernel is correct. The open question is purely how fast the unpack can be made,
 and it is answered on the model.
 
 MIT OR Apache-2.0
-updated: 2026-10-18 03:42 UTC
+updated: 2026-10-18 04:20 UTC

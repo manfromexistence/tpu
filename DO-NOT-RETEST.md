@@ -112,8 +112,10 @@ Layer-0 `blk.0.attn_qkv.weight`, 52.4 M params, `[5120, 10240]`:
 `[exec]` on v5e-1, `10-bonsai-fused/kernel.py`.
 
 - **The cost is flat in batch.** 4.04 ms at B=1, 4.18 ms at B=128.
-- **A host 2-bit repack is 7.5x slower.** Do not propose one again without
-  explaining what changed.
+- **A host 2-bit repack measured 7.5x slower -- but see §7 before treating that
+  as a fact about 2-bit packing.** Its extraction used a broadcast-vector shift,
+  which notebook 13 has since measured as 4.2x slower than the same trits
+  concatenated, for reasons that have nothing to do with the packing width.
 
 ## 6. A correction: the "59 tok/s at batch 128" projection was against an impossible layout
 
@@ -142,34 +144,65 @@ So the open question is not "is the kernel correct" -- it is settled -- but
 **how the 28-byte-row layout performs**, because that is the only one that
 fits without a host repack.
 
-## 7. The fused full model, measured twice -- and one refuted hypothesis
+## 7. The fused full model: the open question is settled, and it was data movement
 
-Both runs executed the real 64-layer model on Colab TPU v5e-1, jax 0.11.2 /
-libtpu 0.0.50, and both printed the same correctness gate (first token `11`,
-`','`) and the same generated text as notebook 04. Receipts:
-`11-bonsai-fused-full/receipt-colab-tpu.json`,
-`12-bonsai-bigdma/receipt-colab-tpu.json`.
+Five runs of the real 64-layer model on Colab TPU v5e-1, jax 0.11.2 /
+libtpu 0.0.50, every one printing the same correctness gate (first token `11`,
+`','`) and the same generated text as notebook 04.
 
-| config | tok/s (B=32) | ms/step | steps/forward |
+| config | tok/s (B=32) | ms/step | receipt |
 | --- | --- | --- | --- |
-| nb 11, one in-block per step | **15.30** | **2091** | 1.64 M |
-| nb 12, eight in-blocks per step | 13.30 | 2406 | 410 K |
+| nb 11, `stack(...).reshape` decode, TC 128, int32 | 15.31 | 2090.6 | `11-bonsai-fused-full/receipt-baseline-dec-stack-tc128.json` |
+| nb 12, eight in-blocks per step | 13.30 | 2406 | `12-bonsai-bigdma/receipt-colab-tpu.json` |
+| nb 11, decode spelled `concatenate`, TC 128, int32 | 20.35 | 1572.5 | `11-bonsai-fused-full/receipt-dec-cat-int32-tc128.json` |
+| nb 11, + out-tile TC 512 | 24.68 | 1297 | log only (`colab_run/11-tc512.log`) |
+| nb 11, + decode at int16 width, TC 512 | **29.66** | **1078.7** | `11-bonsai-fused-full/receipt-dec-cat-int16-tc512.json` |
 
-**Do not retest "the k-loop is the bottleneck".** It is refuted. Cutting the
-sequential step count 4x made the model 15 % slower, so the ~2 s per forward
-pass does not scale with the number of weight DMAs.
+The last three rows differ from the first by **nothing but how the decode is
+spelled and how wide its lanes are** -- same weights, same tile order, same
+kernels, same output text.
 
-**Do not retest "a cheaper unpack will show up in the wall clock".** NB-11's
-decode was replaced by `(3*((q*p) & 255)) >> 8`, proven bit-identical to the
-old shift chain across all 256 byte values x 5 powers (0 mismatches), ~1.4x
-fewer ops on the hot path. Measured effect: none.
+**Do not retest "the k-loop is the bottleneck".** It is refuted twice over:
+cutting the sequential step count 4x made the model 15 % slower (nb 12), and
+notebook 13 varied `TO` with everything else fixed -- 128 -> 1024 is 3200 -> 400
+programs -- for **1.18x**, saturating by `TO = 512`. Program count, DMA count and
+k-loop length are all excluded as causes.
 
-Excluded so far: HBM bandwidth (2.8 GB/s effective vs ~820 GB/s peak), the MXU
-(batch 16 -> 32 costs 4 %), DMA count (above), unpack instruction count at the
-1.4x scale (above). Still unseparated: the unpack/cast/scale chain itself
-versus Mosaic's scheduling of it. **Settle that inside the next full-model
-run** (§0), with the ablations of `07-pallas-fusion/FINDINGS.md` §7 taken
-after the model number is in the log.
+**Do not retest "a cheaper unpack will not show up in the wall clock".** The
+statement survives, but it was about the wrong kind of cheaper. Notebook 13 Q5
+prices four decodes that produce *identical trits in identical columns* on real
+layer-0 weights:
+
+| change to the decode | what it cuts | decode ms, TO=512 | effect on the model |
+| --- | --- | --- | --- |
+| `(3*((q*p)&255))>>8` for the 5-op shift chain | instructions (~1.4x fewer) | -- | none (nb 11) |
+| `concatenate(-1)` for `stack(axis=1).reshape` | a layout conversion | 3.126 -> 1.866 | **1.33x** |
+| int16 lanes for int32 | element width | 1.866 -> 1.393 | **1.20x** |
+| one broadcast per group (byte-major) | nothing: adds a real interleave | 7.916 | 0.48x, worse |
+
+So the decode is neither instruction-bound nor program-bound. It is
+**data-movement bound inside the VPU**, and the way to make it faster is to stop
+asking Mosaic to reorder columns -- not to write fewer operations. An
+interleaving reshape costs 4.2x more than the same trits concatenated.
+
+**This also re-explains the parked 2-bit repack** (§5). The repack extracted
+trits with `(b >> 2j) & 3` over a broadcast axis, which is the same class of
+column interleave as the `dec3` row above, and it measured 7.5x slower. That is
+evidence about the *extraction pattern*, not about 2-bit packing or the row
+stride: a 2-bit repack is not disproven, and the next attempt at one needs an
+extraction that is a concatenation rather than a broadcast.
+
+Excluded as causes: HBM bandwidth (709 GB/s measured on this slice against
+~820 GB/s spec), the MXU (batch 16 -> 32 costs 4 %), DMA count, program count,
+and decode instruction count. The decode chain is now *measured* as the dominant
+cost of the projection -- 3.13 ms of 3.83 ms at TO=512 before these changes --
+rather than unseparated.
+
+**And one host-code bug, now fixed:** `TC` was doing two jobs (out-tile height
+and in-block width, `BPC = IN // TC`). At TC=128 the two numbers coincide, which
+is why it survived every run on this track. At TC=512 the tile build aborts with
+`attn_qkv.weight 11468800 != 2867200`. The repaired chain is verified at TC
+128/512/1024 in `colab_run/check11.py`.
 
 **Also settled: scoped VMEM is 16 MB and unpack intermediates scale with the
 in-block width.** A block covering all `BPC` in-blocks needs 74 MB and fails
@@ -182,5 +215,5 @@ the previous run's 6 GB of tiles stay resident and produce a
 signature is not evidence about the batch size.
 
 MIT OR Apache-2.0
-updated: 2026-10-18 03:42 UTC
+updated: 2026-10-18 04:20 UTC
 

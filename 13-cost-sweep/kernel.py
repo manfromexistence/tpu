@@ -25,7 +25,14 @@ Questions, in the order each one can kill the next:
   Q2  Does cost scale with program count?                 mode="dot"  TO x4
   Q3  How much is the weight DMA alone?                   mode="dma"
   Q4  How much does the unpack arithmetic add?            mode="dec"
-  Q5  Does a contiguous decode order beat the 5-way stack? mode="dec2"
+  Q5  What inside the unpack costs?                       mode="dec_nc"/"dec2"/"dec3"
+      `cast`   the int32 cast of the 26 payload bytes, nothing else
+      `dec_nc` the decode with the final `concatenate` removed (no (TO,128) tile)
+      `dec2`   the same trits in the same order, spelled with `concatenate`
+               instead of `stack(axis=1).reshape`
+      `dec3`   byte-major order from one broadcast per group, no `stack` at all
+      `dec16`  `dec2` at int16 width; every intermediate fits
+               (`max q*p = 255*81 = 20655 < 32767`), so identical values
 
 **`TO` is the lever nobody has pulled.** The out-tile height has always been
 pinned to `TC=128`, the number of trits in a PTQ1_0 block. That is an accident
@@ -177,8 +184,6 @@ print(f"contiguous-order permutation is valid: "
 # ===================================================================== Q1-Q5
 P5 = (1, 3, 9, 27, 81)
 P4 = (1, 3, 9, 27)
-P5v = jnp.asarray(P5, jnp.int32)[None, None, :]
-P4v = jnp.asarray(P4, jnp.int32)[None, None, :]
 
 
 def _d(q, p):
@@ -188,8 +193,8 @@ def _d(q, p):
     return (((q * p) & 0xFF) * 3) >> 8
 
 
-def dec_stack(b, TO):
-    """Notebook 11's decode: five power planes stacked into the middle axis."""
+def dec_parts(b, TO):
+    """The three power groups of a PTQ1_0 block, decoded to trits 0..2."""
     qs = b[:, :24].astype(jnp.int32)
     qh = b[:, 24:26].astype(jnp.int32)
     t80 = jnp.stack([_d(qs[:, :16], p) for p in P5], 1).reshape(TO, 80)
@@ -197,21 +202,53 @@ def dec_stack(b, TO):
     h8 = jnp.concatenate([
         jnp.concatenate([_d(qh[:, :1], p), _d(qh[:, 1:], p)], -1)
         for p in P4], -1).reshape(TO, 8)
+    return t80, t40, h8
+
+
+def dec_stack(b, TO):
+    """Notebook 11's decode: five power planes stacked into the middle axis."""
+    return jnp.concatenate(dec_parts(b, TO), -1)
+
+
+def dec_cat(b, TO, dt=jnp.int32):
+    """The same trits in the same column order, spelled with `concatenate`
+    instead of `stack(axis=1).reshape`. `stack`+`reshape` and `concatenate`
+    both place power `p` of byte `b` at column `16*p + b`, so this is an A/B on
+    whether Mosaic lowers the 3-D reshape as a shuffle.
+
+    `dt` is the integer width the arithmetic runs at. Every intermediate fits in
+    int16 (`max q*p = 255*81 = 20655 < 32767`), so `dt=jnp.int16` is exactly
+    equivalent and asks whether narrower elements buy wider vregs.
+    """
+    qs = b[:, :24].astype(dt)
+    qh = b[:, 24:26].astype(dt)
+    t80 = jnp.concatenate([_d(qs[:, :16], p) for p in P5], -1)
+    t40 = jnp.concatenate([_d(qs[:, 16:], p) for p in P5], -1)
+    h8 = jnp.concatenate([
+        jnp.concatenate([_d(qh[:, :1], p), _d(qh[:, 1:], p)], -1)
+        for p in P4], -1)
     return jnp.concatenate([t80, t40, h8], -1)
 
 
 def dec_contig(b, TO):
     """Same trits, byte-major order: one broadcast per group, no stack.
 
-    Column `5*i + j` is power `P5[j]` of `qs` byte `i`.  The only difference
-    from `dec_stack` is the order *inside* the 128 trits, which is free because
-    `x` is permuted on the host to match (`perm_ctg`).
+    Column `5*b + p` is power `p` of `qs` byte `b`, so the trailling-dims
+    flatten of the broadcast is a plain reshape. The order differs from
+    `dec_stack`, which is free because `x` is permuted on the host to match
+    (`perm_ctg`).
+
+    The power vectors are built from `jnp.arange` rather than captured from
+    module scope: this stack rejects captured array constants
+    ("captures constants [i32[1,1,5], i32[1,1,4]]").
     """
     qs = b[:, :24].astype(jnp.int32)[:, :, None]              # (TO, 24, 1)
     qh = b[:, 24:26].astype(jnp.int32)[:, :, None]
-    t80 = _d(qs[:, :16], P5v).reshape(TO, 80)
-    t40 = _d(qs[:, 16:], P5v).reshape(TO, 40)
-    h8 = _d(qh, P4v).reshape(TO, 8)
+    p5 = (3 ** jnp.arange(5, dtype=jnp.int32))[None, None, :]
+    p4 = (3 ** jnp.arange(4, dtype=jnp.int32))[None, None, :]
+    t80 = _d(qs[:, :16], p5).reshape(TO, 80)
+    t40 = _d(qs[:, 16:], p5).reshape(TO, 40)
+    h8 = _d(qh, p4).reshape(TO, 8)
     return jnp.concatenate([t80, t40, h8], -1)
 
 
@@ -224,9 +261,23 @@ def kernel(xt_ref, rep_ref, sc_ref, z_ref, acc_ref, *, mode, TO, nsteps):
 
     if mode == "dma":
         acc_ref[...] += jnp.sum(b.astype(jnp.float32), 1)[:, None]
+    elif mode == "cast":
+        acc_ref[...] += jnp.sum(b[:, :26].astype(jnp.int32), 1)[:, None]
     elif mode == "dec":
         acc_ref[...] += jnp.sum(dec_stack(b, TO).astype(jnp.float32), 1)[:, None]
+    elif mode == "dec_nc":
+        # decode, but never build the (TO, 128) tile
+        t80, t40, h8 = dec_parts(b, TO)
+        acc_ref[...] += (jnp.sum(t80.astype(jnp.float32), 1)
+                         + jnp.sum(t40.astype(jnp.float32), 1)
+                         + jnp.sum(h8.astype(jnp.float32), 1))[:, None]
     elif mode == "dec2":
+        acc_ref[...] += jnp.sum(dec_cat(b, TO).astype(jnp.float32), 1)[:, None]
+    elif mode == "dec16":
+        # identical values, 16-bit lanes: does the vreg get wider?
+        acc_ref[...] += jnp.sum(
+            dec_cat(b, TO, jnp.int16).astype(jnp.float32), 1)[:, None]
+    elif mode == "dec3":
         acc_ref[...] += jnp.sum(dec_contig(b, TO).astype(jnp.float32), 1)[:, None]
     else:
         w = (dec_stack(b, TO) - 1).astype(jnp.bfloat16) \
@@ -305,9 +356,17 @@ print("\n--- Q4  + unpack arithmetic ---", flush=True)
 for TO in (128, 512):
     cell(f"dec   TO={TO}", TO, "dec")
 
-print("\n--- Q5  contiguous decode order ---", flush=True)
+print("\n--- Q5  what inside the unpack costs ---", flush=True)
 for TO in (128, 512):
-    cell(f"dec2  TO={TO}", TO, "dec2")
+    cell(f"cast  TO={TO}", TO, "cast")
+for TO in (128, 512):
+    cell(f"dec_nc TO={TO}", TO, "dec_nc")
+for TO in (128, 512, 1024):
+    cell(f"dec2  TO={TO} (concat spelling)", TO, "dec2")
+for TO in (512, 1024):
+    cell(f"dec3  TO={TO} (broadcast spelling)", TO, "dec3")
+for TO in (512, 1024):
+    cell(f"dec16 TO={TO} (int16, identical values)", TO, "dec16")
 
 # ===================================================================== report
 print("\n=== notebook 13 receipt ===", flush=True)
