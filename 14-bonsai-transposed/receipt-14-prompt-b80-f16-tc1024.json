@@ -1,0 +1,23 @@
+{
+  "notebook": "14-bonsai-transposed",
+  "backend": "tpu",
+  "jax": "0.11.2",
+  "batch": 80,
+  "n_gen": 64,
+  "prompt": "Hello, who are you? what is the capital bangladesh, paris and india, us??",
+  "prompt_tokens": 19,
+  "max_t": 96,
+  "state_dtype": "float16",
+  "out_tile_tc": 1024,
+  "cache_pallas_callable": true,
+  "weights": "PTQ1_0 consumed as packed bytes, in-kernel unpack",
+  "layout": "transposed (32, rows); lanes = out-columns; x @ w",
+  "padding": "28 real bytes + 4 pad in each 32-byte row",
+  "decode": "concatenate along axis 0 (in-dims on sublanes), int16 lanes",
+  "decode_seconds": 19.084,
+  "aggregate_tok_per_s": 268.29,
+  "ms_per_step": 298.2,
+  "first_token": 271,
+  "sample": "\n\n<think>\nThe user is asking two things:\n1. Who am I?\n2. What is the capital of Bangladesh, Paris, India, and US?\n\nLet me address each:\n\n1. I'm Qwen, a large language model developed by Alibaba Group's Tongyi Lab.\n\n2.",
+  "claim": "[exec] measured on Colab TPU v5e-1"
+}

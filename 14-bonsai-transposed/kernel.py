@@ -407,8 +407,8 @@ model end to end and writes its own receipt.
 """
 # %% cell
 def run_batch(B, state_dt):
-    T_ = max(MAX_T, N_GEN + 2)
     ids = tok.encode(PROMPT)
+    T_ = max(MAX_T, len(ids) + N_GEN + 2)
     st = jax.devices()[0].memory_stats()
     tag = state_dt.replace("float", "f")
     print(f"\n=== batch {B} | state {state_dt} | TC {TC} | max_t {T_} ===")
@@ -441,11 +441,14 @@ def run_batch(B, state_dt):
         return x
 
     t0 = time.perf_counter()
-    x = step(xg, jnp.int32(0), S, C, K, V)
+    x = xg
+    for j, tid in enumerate(ids):              # full prompt prefill, one token per step
+        x = jnp.broadcast_to(embed(int(tid)), (B, NEMB))
+        x = step(x, jnp.int32(j), S, C, K, V)  # a 1-token prompt = the old seed path
     lg = logits_b(x)
     cur = np.asarray(jnp.argmax(lg, axis=0))
     first_tok = int(cur[0])                    # captured here: `cur` is reassigned below
-    print(f"prefill (compile + 1 step): {time.perf_counter()-t0:.1f}s")
+    print(f"prefill (compile + {len(ids)} step(s)): {time.perf_counter()-t0:.1f}s")
     print(f"gate: first token {first_tok} {tok.decode([first_tok])!r} "
           f"(notebook 08 expects 11 ',')")
     st = jax.devices()[0].memory_stats()
@@ -458,11 +461,11 @@ def run_batch(B, state_dt):
         for b in range(B):
             gen.append(int(cur[b]))
         x = jnp.broadcast_to(embed(int(cur[0])), (B, NEMB))
-        x = step(x, jnp.int32(1 + i_step), S, C, K, V)
+        x = step(x, jnp.int32(len(ids) + i_step), S, C, K, V)
         cur = np.asarray(jnp.argmax(logits_b(x), axis=0))
     t_gen = time.perf_counter() - t0
     agg = B * N_GEN / t_gen
-    sample = tok.decode(gen[::B][:48])
+    sample = tok.decode(gen[::B][:N_GEN])
 
     print(f"decode wall time : {t_gen:.2f}s for {N_GEN} steps")
     print(f"aggregate tok/s  : {agg:.2f}")
@@ -474,7 +477,8 @@ def run_batch(B, state_dt):
         "notebook": "14-bonsai-transposed",
         "backend": str(jax.default_backend()),
         "jax": jax.__version__,
-        "batch": B, "n_gen": N_GEN, "prompt": PROMPT, "max_t": T_,
+        "batch": B, "n_gen": N_GEN, "prompt": PROMPT, "prompt_tokens": len(ids),
+        "max_t": T_,
         "state_dtype": state_dt, "out_tile_tc": TC,
         "cache_pallas_callable": CACHE,
         "weights": "PTQ1_0 consumed as packed bytes, in-kernel unpack",

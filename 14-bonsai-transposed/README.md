@@ -92,5 +92,15 @@ Run-to-run spread on the best config: 279.46 vs 281.01 in the same process,
 must be re-pinned first -- see `DO-NOT-RETEST.md` 1 -- otherwise the stock
 jax 0.7.2 / libtpu 0.0.21.1 pair cannot compile any Pallas kernel.
 
+**Prompting (added 2026-10-18):** `PROMPT=<text>` is now prefilled in full,
+one token per step, before generation starts; `N_TOKENS` bounds the generated
+continuation and `MAX_T` the context. Before this, only the first prompt token
+was consumed, which is why every earlier run repeated the same continuation. A
+single-token prompt (`PROMPT=Hello`) takes the exact path the receipts above
+used, so they remain reproducible. Two receipts with a 19-token prompt on this
+build: `receipt-14-prompt-b80-f16-tc1024.json` (batch 80, 64 generated, 268.3
+tok/s) and `receipt-14-prompt-b64-f16-tc1024.json` (batch 64, 128 generated,
+207.1 tok/s -- long enough to reach the answered part of the continuation).
+
 MIT OR Apache-2.0
-updated: 2026-10-18 05:45 UTC
+updated: 2026-10-18 06:15 UTC
