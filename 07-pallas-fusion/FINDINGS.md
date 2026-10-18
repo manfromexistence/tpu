@@ -224,33 +224,54 @@ separated:
   overhead, and the fix is fewer, larger programs.
 
 The V2 result argues mildly for the second (V2 does less arithmetic and is
-slower). The separating experiment: keep the arithmetic identical and vary
+slower). The separating experiment -- keep the arithmetic identical and vary
 only the number of programs (e.g. 2 or 4 in-blocks per program, or a 256-row
-out tile).
+out tile) -- is **not a run on its own**. It is measured inside the next
+full-model run, after the model number is in the log: `tpu/README.md` §6,
+`DO-NOT-RETEST.md` §0.
 
 ## 8. Consequence for the throughput target
+
+**Status: superseded by notebook 11, which is the projection that was actually
+executed. Keep this section for the arithmetic, not as a plan.**
 
 Extrapolating layer-0 qkv's measured cost per parameter to the ~27.0 B
 ternary parameters in the 5.9 GB GGUF (x515) gives ~2.15 s of weight work per
 forward pass, excluding attention, GDN, norms and sampling:
 
-| Batch | Projected aggregate |
-| --- | --- |
-| 1 | ~0.5 tok/s |
-| 32 | ~15 tok/s |
-| 128 | ~59 tok/s |
+| Batch | Projected aggregate | Outcome |
+| --- | --- | --- |
+| 1 | ~0.5 tok/s | -- |
+| 32 | ~15 tok/s | **measured 15.30** (nb 11) |
+| 128 | ~59 tok/s | **retracted** -- assumed a 27.0 GB layout (`DO-NOT-RETEST.md` 6) |
 
 Batch is the free lever but the GDN recurrence caps it near 32, so ~15 tok/s
-is where the current kernel lands — better than notebook 09's 4.0 tok/s, and
+is where the current kernel lands -- better than notebook 09's 4.0 tok/s, and
 nowhere near 100. The remaining 6-7x has to come out of the unpack itself
-(§7), which is where the 300x headroom sits. Next steps, in order:
+(§7), which is where the 300x headroom sits.
 
-1. Run the separating experiment in §7 (program count vs layout shuffles).
-2. Re-optimise the unpack with the answer, then re-measure tok/s.
-3. Only then wire the fused kernel into the 64-layer scan.
+**How to pursue it -- rewritten 2026-10-18.** This used to read "run the
+separating experiment, re-optimise, and *only then* wire the fused kernel into
+the 64-layer scan". That order was wrong and it is retracted. It made
+single-tensor benchmarking the default and the real model the reward at the
+end, and this track has already been burned three times by single-layer
+projections that did not survive contact with the model (this section's own
+batch-128 row, `DO-NOT-RETEST.md` §6, and nb 12's confounded k-loop
+refutation).
 
-The hardware is capable (v5e: 197 TFLOP/s bf16, 820 GB/s). The kernel is
-correct. The open question is purely how fast the unpack can be made.
+1. **Run the real 64-layer model first.** Print its tok/s, ms/step, the
+   correctness gate and the generated text. This is the number that counts.
+2. With that number in the log, take the separating measurements of §7 inside
+   the same session.
+3. Re-optimise the unpack with the answer, and confirm with **another real
+   model run** -- not with a re-timed single tensor.
+
+The model run is the cheap one: nb 11's tile build was 8.7 s, and compile plus
+first step 10.0 s.
+
+The hardware is capable (v5e: 197 TFLOP/s bf16, 393 TOPS int8, 820 GB/s). The
+kernel is correct. The open question is purely how fast the unpack can be made,
+and it is answered on the model.
 
 MIT OR Apache-2.0
-updated: 2026-10-18 00:00 UTC
+updated: 2026-10-18 03:42 UTC

@@ -205,8 +205,9 @@ against the real model and **both failed**:
 What is excluded is HBM bandwidth (2.8 GB/s effective against ~820 GB/s peak),
 the MXU (batch 16 -> 32 costs 4 %), DMA count, and the unpack instruction count
 at the 1.4x scale. What is not separated is the unpack/cast/scale chain itself
-versus Mosaic's scheduling of it -- settle that with the isolating experiment,
-not with another full-model run.
+versus Mosaic's scheduling of it -- and that is settled **inside the next
+full-model run**, never by a session on one tensor: `tpu/README.md` §6,
+`DO-NOT-RETEST.md` §0.
 
 The whole model now runs at 27.0 Gtrit / 2.09 s = **12.9 Gtrit/s**, against a
 5.9 GB/traversal packed stream that the HBM roofline would carry in 7.2 ms --
@@ -219,4 +220,4 @@ measurement used a broadcast-vector shift for extraction, so it does not settle
 the row stride on its own -- the repack is unproven, not disproven.
 
 MIT OR Apache-2.0
-updated: 2026-10-18 05:40 UTC
+updated: 2026-10-18 03:42 UTC

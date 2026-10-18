@@ -16,6 +16,10 @@ why this is a from-scratch JAX forward pass rather than a build of the
 existing runner. See `TPU-STATUS.md` for what is verified, what the
 throughput ceiling is, and the 9 bugs that were fixed on the way.
 
+**The one hard rule for this folder: always run the actual Bonsai 2 model.** A
+session that only times a single tensor is a wasted session, whatever it
+measures. See §6.
+
 ## 1. First five minutes
 
 Kaggle auth lives outside the hub (never copy it in):
@@ -112,6 +116,13 @@ then every FWHT test uses random signs and says so.
 
 ## 6. Hard rules
 
+- **Always run the actual Bonsai 2 model.** Every TPU session runs the real
+  64-layer model end to end. A session that only times one tensor is a wasted
+  session, no matter how clean the measurement looks. Cost breakdowns,
+  ablations and sweeps are taken **inside that same run**, after the model
+  number is in the log -- never instead of it. This rule outranks any plan
+  elsewhere in this folder that says to benchmark first. See
+  `DO-NOT-RETEST.md` §0.
 - Never commit `env.ps1`, tokens, cookies, or service-account keys.
   `.gitignore` already excludes `/tpu/env.ps1`; keep it that way.
 - Never paste a secret into a kernel, notebook, log, or chat quote.
@@ -120,4 +131,4 @@ then every FWHT test uses random signs and says so.
 - Do not delete build outputs or caches to free space; report instead.
 
 MIT OR Apache-2.0
-updated: 2026-10-18 05:45 UTC
+updated: 2026-10-18 03:42 UTC

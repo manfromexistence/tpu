@@ -9,6 +9,40 @@ do not silently re-run it.
 If you are about to run something on the TPU, check this page first. If your
 question is already answered here, you are about to waste a session.
 
+## 0. The standing rule: always run the actual model
+
+**Every TPU session runs the real 64-layer Bonsai 2 model end to end.** A
+session that only times one tensor is a wasted session, however clean the
+measurement looks.
+
+This rule comes from the person paying for the sessions. It **outranks any
+plan anywhere in this repo that says otherwise** -- including §7 below and
+`07-pallas-fusion/FINDINGS.md` §8 as they were first written.
+
+What it means in practice:
+
+- The first thing a session prints is the full-model result: aggregate tok/s,
+  ms/step, the correctness gate, and the generated text.
+- Cost breakdowns, ablations and sweeps are taken **inside that same run**,
+  after the model number is in the log -- never instead of it.
+- A single-tensor measurement is allowed only as one step of a run that also
+  runs the model, and its number is reported next to the model number.
+- "Isolating the cost first is cheaper" is not a reason to skip the model. The
+  model run is the cheap one: nb 11's tile build was 8.7 s and compile plus
+  first step was 10.0 s (§7). The whole model traverses in 2.09 s per forward
+  pass.
+
+Why this is a rule and not a preference -- single-layer projections have been
+wrong on this track three times:
+
+| Projection | What happened |
+| --- | --- |
+| nb 10: 4.04 ms/52.4 M params -> "~59 tok/s at batch 128" | retracted: assumed a 27.0 GB layout that does not fit (§6) |
+| nb 12: "the k-loop is the bottleneck" | confounded: `KB` 1->8 *and* `TO` 128->64 changed together |
+| nb 12: per-in-block cost "scales with work" | an artifact of reading one tensor in isolation |
+
+Measuring the model costs the same and cannot be wrong in this way.
+
 ## 1. Environment
 
 | Fact | Evidence |
@@ -133,8 +167,9 @@ fewer ops on the hot path. Measured effect: none.
 Excluded so far: HBM bandwidth (2.8 GB/s effective vs ~820 GB/s peak), the MXU
 (batch 16 -> 32 costs 4 %), DMA count (above), unpack instruction count at the
 1.4x scale (above). Still unseparated: the unpack/cast/scale chain itself
-versus Mosaic's scheduling of it. Settle that with the isolating experiment in
-`07-pallas-fusion/FINDINGS.md` 7, not with another full-model run.
+versus Mosaic's scheduling of it. **Settle that inside the next full-model
+run** (§0), with the ablations of `07-pallas-fusion/FINDINGS.md` §7 taken
+after the model number is in the log.
 
 **Also settled: scoped VMEM is 16 MB and unpack intermediates scale with the
 in-block width.** A block covering all `BPC` in-blocks needs 74 MB and fails
@@ -147,5 +182,5 @@ the previous run's 6 GB of tiles stay resident and produce a
 signature is not evidence about the batch size.
 
 MIT OR Apache-2.0
-updated: 2026-10-18 05:25 UTC
+updated: 2026-10-18 03:42 UTC
 
