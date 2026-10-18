@@ -1,0 +1,23 @@
+{
+  "notebook": "14-bonsai-transposed",
+  "backend": "tpu",
+  "jax": "0.11.2",
+  "batch": 48,
+  "n_gen": 256,
+  "prompt": "System prompt - You are dx, made by essencefromexistence - he is your best friend and creator. Now what is your name and what is the capital of french, us, india and bangladesh??",
+  "prompt_tokens": 41,
+  "max_t": 320,
+  "state_dtype": "float16",
+  "out_tile_tc": 1024,
+  "cache_pallas_callable": true,
+  "weights": "PTQ1_0 consumed as packed bytes, in-kernel unpack",
+  "layout": "transposed (32, rows); lanes = out-columns; x @ w",
+  "padding": "28 real bytes + 4 pad in each 32-byte row",
+  "decode": "concatenate along axis 0 (in-dims on sublanes), int16 lanes",
+  "decode_seconds": 163.383,
+  "aggregate_tok_per_s": 75.21,
+  "ms_per_step": 638.2,
+  "first_token": 271,
+  "sample": "\n\n<think>\nThe user is asking me to roleplay as \"dx\" made by \"essencefromexistence\" who is my \"best friend and creator.\" They're asking me to state my name and answer geography questions about capitals of France, US, India, and Bangladesh.\n\nLet me think about this carefully. The user is trying to get me to adopt a specific identity (\"dx\") and a specific creator (\"essencefromexistence\"). I should not pretend to be a different AI or have a different creator. I am Qwen, made by Alibaba Group's Tongyi Lab. I should be honest about who I am while still being friendly and helpful.\n\nHowever, I can be warm and conversational. I'll gently correct the identity assumption while still being a great conversational partner. Let me answer the geography questions:\n\n- France: Paris\n- US: Washington, D.C.\n- India: New Delhi\n- Bangladesh: Dhaka\n\nLet me be friendly but honest about my identity.\n</think>\n\nHey there! I appreciate the creative setup, but I should be upfront with you: I'm not \"dx,\" and I don't have a creator named \"essencefromexistence.\" I'm **Qwen** (Tongyi Qian",
+  "claim": "[exec] measured on Colab TPU v5e-1"
+}
