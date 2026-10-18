@@ -16,7 +16,12 @@ meant to be *appended to* a model run, not to replace one.
 
 **Executed 2026-10-18, three passes, on Colab TPU v5e-1, after the model run.**
 Receipt: `receipt-cost-sweep-pass3.json`. It settled the question it was written
-to settle, and the answer became a 1.94x change to the model:
+to settle, and the answer became a 1.94x change to the model.
+
+**Later the same day, notebook 14 changed the tile layout** (out-columns on the
+128 lanes) and the real model went 29.66 -> 281.01 tok/s. The per-cell timings
+below are properties of the old, lane-starved layout -- do not reconcile them
+against notebook 14's 284.7 ms/step. See `DO-NOT-RETEST.md` §8.
 
 | Question | Answer | Evidence |
 | --- | --- | --- |
@@ -188,4 +193,4 @@ breakdown are one file is the preferred end state. It is not done yet, and this
 README does not claim it is.
 
 MIT OR Apache-2.0
-updated: 2026-10-18 04:20 UTC
+updated: 2026-10-18 05:45 UTC
