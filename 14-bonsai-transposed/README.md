@@ -105,11 +105,13 @@ tok/s) and `receipt-14-prompt-b64-f16-tc1024.json` (batch 64, 128 generated,
 **Context costs step time (measured 2026-10-18):** the decode step scales with
 `MAX_T`, not only with the batch. Per-step ms on this build: 284.7 (`max_t` 64,
 batch 80) -> 298 (`max_t` 96, batch 80) -> 309 (`max_t` 160, batch 64) -> 638
-(`max_t` 320, batch 48). A long-context run therefore trades throughput for
-reach: same 41-token prompt, batch 48 / 256 generated at `max_t` 320 measured
-75.2 tok/s (`receipt-14-dxprompt-b48-f16-tc1024.json`), while batch 80 /
-`max_t` 96 / 44 generated measured 268.2 tok/s
-(`receipt-14-dxprompt-b80-f16-tc1024.json`).
+(`max_t` 320, batch 48) -> 662 (`max_t` 512, batch 32). A long-context run
+therefore trades throughput for reach: same 41-token prompt, batch 48 / 256
+generated at `max_t` 320 measured 75.2 tok/s
+(`receipt-14-dxprompt-b48-f16-tc1024.json`), batch 80 / `max_t` 96 / 44
+generated measured 268.2 tok/s (`receipt-14-dxprompt-b80-f16-tc1024.json`),
+and batch 32 / 460 generated at `max_t` 512 measured 48.3 tok/s
+(`receipt-14-essay-b32-f16-tc1024.json`).
 
 MIT OR Apache-2.0
-updated: 2026-10-18 07:00 UTC
+updated: 2026-10-18 07:15 UTC
