@@ -1,6 +1,22 @@
 # TPU execution track — status
 
-## Result
+## Current best (2026-10-18)
+
+**15.30 tok/s aggregate, batch 32, 2091 ms/step** — the real 64-layer model with
+every ternary projection served by a fused PTQ1_0 Pallas kernel that unpacks
+the weights in place. Notebook 11, `[exec]` on Colab TPU v5e-1, jax 0.11.2 /
+libtpu 0.0.50. Correctness gate `first token 11 ','`; generated text identical
+to the notebook 04 proof string below.
+
+| step | tok/s | receipt |
+| --- | --- | --- |
+| nb 04 single-stream | 0.27 | first-ever run |
+| nb 06 fixed-KV, batch 16 | 3.5 | |
+| nb 09 int8, batch 8 | 4.0 | |
+| **nb 11 fused, batch 32** | **15.30** | `11-bonsai-fused-full/receipt-colab-tpu.json` |
+| nb 12 windowed DMA, batch 32 | 13.30 | refuted hypothesis, see below |
+
+## Result (2026-10-17, first TPU run of this model)
 
 **Bonsai 2 27B runs on Colab TPU v5e-1 and generates coherent English.**
 Notebook 04, greedy decoding, prompt `Hello`, 40 tokens:
@@ -174,13 +190,33 @@ weight work per forward pass:
 | 32 | ~15 tok/s |
 | 128 | ~59 tok/s |
 
-So this path beats notebook 09's 4.0 tok/s but does not by itself reach 100,
-and the GDN recurrence caps batch near 32 anyway. The unpack currently runs
-at ~12.8 Gtrit/s against an 11.5 MB/traversal packed-weight stream -- about
-300x below the HBM roofline, so the remaining 6-7x has to come out of the
-unpack, not from a larger batch. Two live hypotheses and the experiment that
-separates them are in `tpu/07-pallas-fusion/FINDINGS.md` §7. A host-side
-2-bit repack was tried and measured **7.5x slower**, so it is dead.
+The batch-32 projection was accurate: notebook 11 measured **15.30 tok/s**
+against that ~15. The batch-128 row is retracted -- it assumed a 128-byte-row
+layout that needs 27.0 GB and does not fit (`DO-NOT-RETEST.md` 6).
+
+Two follow-up hypotheses about the ~2 s of cost per forward pass were tested
+against the real model and **both failed**:
+
+| Hypothesis | Test | Result |
+| --- | --- | --- |
+| per-DMA overhead in the k-loop | nb 12, 8 in-blocks/step (4x fewer steps) | 13.30 tok/s, 15 % *slower* |
+| the 5-op unpack chain | nb 11, provably-identical `(3*((q*p)&255))>>8` | no change in wall clock |
+
+What is excluded is HBM bandwidth (2.8 GB/s effective against ~820 GB/s peak),
+the MXU (batch 16 -> 32 costs 4 %), DMA count, and the unpack instruction count
+at the 1.4x scale. What is not separated is the unpack/cast/scale chain itself
+versus Mosaic's scheduling of it -- settle that with the isolating experiment,
+not with another full-model run.
+
+The whole model now runs at 27.0 Gtrit / 2.09 s = **12.9 Gtrit/s**, against a
+5.9 GB/traversal packed stream that the HBM roofline would carry in 7.2 ms --
+about 300x below it. Batch cannot close that: the GDN recurrence holds ~151 MB
+of f32 state per sequence per 48 layers, so batch 32 is already ~4.8 GB next to
+6.1 GB of tiles and bf16 state would be needed to go further. The experiment that
+separates the two remaining candidates is in `tpu/07-pallas-fusion/FINDINGS.md` §7. A host-side
+2-bit repack was tried and measured **7.5x slower** and is parked, but that
+measurement used a broadcast-vector shift for extraction, so it does not settle
+the row stride on its own -- the repack is unproven, not disproven.
 
 MIT OR Apache-2.0
-updated: 2026-10-18 00:00 UTC
+updated: 2026-10-18 05:40 UTC
