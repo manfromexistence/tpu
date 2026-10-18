@@ -5,9 +5,12 @@ Kaggle and Colab access, kernel history, and a JAX/Pallas TPU runner.
 A new agent starts here and should be productive without asking for
 credentials.
 
-**Bonsai 2 27B runs on a Colab TPU v5e-1** (notebook 04). Greedy-decoded
-coherent English for 40 tokens at 0.27 tok/s, measured
-[exec] 2026-10-16. llama.cpp cannot use TPU silicon at all -- it has no
+**Bonsai 2 27B runs on a Colab TPU v5e-1** (notebook 04, first run 2026-10-16:
+greedy-decoded coherent English for 40 tokens at 0.27 tok/s), and the current
+best is **15.30 tok/s aggregate at batch 32** with every ternary projection
+served by a fused PTQ1_0 Pallas kernel that unpacks the weights in place
+(notebook 11, `[exec]` 2026-10-18). llama.cpp cannot use TPU silicon at all --
+it has no
 TPU backend, so on a TPU VM it silently runs on the host CPU -- which is
 why this is a from-scratch JAX forward pass rather than a build of the
 existing runner. See `TPU-STATUS.md` for what is verified, what the
@@ -76,6 +79,15 @@ contract, and foldable linears. Two modes: **A** = offline BF16
 | 01 | `tpu-env-probe` | JAX/Pallas presence, FWHT-1024 timing | `[exec]` Colab TPU v5e-1 2026-10-14, receipt in folder; Kaggle kernel pushed, run queued |
 | 02 | `gguf-prism-metadata` | GGUF fork reader, sign-vector inventory | `[exec]` Colab TPU v5e-1 2026-10-14 against PTQ1_0, receipt in folder; push blocked by Kaggle 1-TPU slot |
 | 03 | `fwht-kernel-test` | Signed-FWHT reference + control tests | `[exec]` all 4 tests PASS on Colab TPU v5e-1 2026-10-14, receipt in folder; push blocked by Kaggle 1-TPU slot |
+| 04 | `bonsai-tpu-forward` | From-scratch 27B forward pass; the correctness proof | `[exec]` v5e-1 2026-10-17, 0.27 tok/s single-stream, coherent 40 tokens |
+| 05 | `bonsai-tpu-run` | Run harness for the forward pass | `[exec]` 2026-10-17 |
+| 06 | `bonsai-tpu-fast` | Fixed-KV batched decode | `[exec]` batch 16 = 3.5 tok/s, 13x notebook 04 |
+| 07 | `pallas-fusion` | Why the fused matmul failed, and the grid API that works | `[exec]` HF fused-INT8 control at `ca674d6`; four retractions in FINDINGS |
+| 08 | `bonsai-scan` | One `lax.scan` over all 64 layers | `[exec]` batch 4 = 1.5 tok/s |
+| 09 | `bonsai-int8` | int8 weights | `[exec]` batch 8 = 4.0 tok/s |
+| 10 | `bonsai-fused` | Fused PTQ1_0 ternary matmul in Pallas | `[exec]` tile vs the model's matrix maxdiff **0.0**; 4.04 ms per 52.4 M params, flat in batch |
+| 11 | `bonsai-fused-full` | The real 64-layer model, fully fused | `[exec]` **batch 32 = 15.30 tok/s**, gate `first token 11` |
+| 12 | `bonsai-bigdma` | 8 in-blocks per grid step | `[exec]` 13.30 tok/s -- the per-DMA-overhead hypothesis, refuted |
 
 Measured on Colab TPU v5e-1 (`TPU v5 lite`, jax 0.7.2, 15.75 GiB HBM
 limit, Pallas present): **FWHT-1024 = 0.295 ms/call** (20-call mean,
@@ -108,4 +120,4 @@ then every FWHT test uses random signs and says so.
 - Do not delete build outputs or caches to free space; report instead.
 
 MIT OR Apache-2.0
-updated: 2026-10-14 00:00 UTC
+updated: 2026-10-18 05:45 UTC
