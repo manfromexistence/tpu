@@ -61,9 +61,10 @@ AssertionError: attn_qkv.weight 11468800 != 2867200
 
 Fixed by separating them (`BPC = IN // QK`, `TOUT = OUT // TC`, and the `x`
 block spec at `(QK, B)` rather than `(TC, B)`). The repaired index chain is
-checked against a reference written from the layout rule at TC 128/512/1024 in
-`colab_run/check11.py`; the assertion is what caught it, on the first TC=512
-attempt, in 40 seconds.
+checked against a reference written from the layout rule at TC 128/512/1024 by
+`G:\Temp\UserTemp\opencode\colab_run\check11.py` (outside the repo: `tpu/*/`
+allow-lists only `kernel.py`, notebooks, receipts and `*.md`); the assertion is
+what caught it, on the first TC=512 attempt, in 40 seconds.
 
 ### `first_token` in the receipts
 
@@ -122,21 +123,34 @@ same kernel body. See `tpu/DO-NOT-RETEST.md` §6.
 
 ## Risk, stated honestly
 
-The one unmeasured thing is how the DMA behaves at a 28-byte row stride. The
-block `(128, 28)` is 3584 fully contiguous bytes, so it should be fine, but
-notebook 10 measured a 32-byte stride at 7.5x slower than 128 -- the script
-prints per-stage timings so the answer is visible either way.
+The one thing this folder shipped without measuring was how the DMA behaves at a
+**28-byte row stride**. Notebook 10 had measured a 32-byte stride at 7.5x slower
+than 128 bytes, and that was the reason to doubt the layout. It is now measured,
+on the real weights, in notebook 13's `dma` cell: **104.9 Gtrit/s at TO=128 and
+180.4 Gtrit/s at TO=512**, i.e. 0.50 ms and 0.29 ms of a 3.83 ms projection. The
+28-byte stride is not a problem, the prediction above was pessimistic, and the
+128-byte-row fallback is not needed.
 
-If it is slow, the fix is to pack 4 in-blocks into each 128-byte row (512
-trits at 2 bits, 6.74 GB total, still fits) and raise the contraction to 512.
+The parked 400-byte alternative (4 in-blocks per 128-byte row) is a different
+story: its 7.5x penalty came from a broadcast-based trit extraction, which
+notebook 13 prices at 4.2x worse than the same trits concatenated. That is a
+result about the extraction pattern, not about 2-bit packing or the row stride
+(`DO-NOT-RETEST.md` §7).
 
 ## Where the remaining time goes
 
 At 29.66 tok/s the step is 1079 ms for 26.9 Gtrits, an aggregate **24.9
 Gtrit/s**. Notebook 13's best cell for this decode is 38.5 Gtrit/s (`dec16`,
-TO=1024) and its pure-DMA floor is 182 Gtrit/s, so the projection is now ~65 %
-of the decode-only ceiling and the arithmetic inside the decode is close to what
-this VPU gives for this op shape.
+TO=1024) and its pure-DMA floor is 182 Gtrit/s. Pricing the model's 513
+`attn_qkv`-equivalents at that measured 1.393 ms per cell accounts for ~715 ms
+of the 1079 ms step, so ~364 ms is everything that is *not* a ternary projection
+(attention, GDN scan, norms, the output projection, sampling). The projection is
+now running near its own measured ceiling rather than 300x below the roofline.
+
+That arithmetic also settles the 100 tok/s question for this batch: 100 tok/s at
+batch 32 is a 320 ms step, and the non-projection work alone is ~364 ms, so no
+amount of kernel work reaches it here. Batch is the only way through (`FINDINGS`
+§8 has the table).
 
 Two levers remain, neither of them a decode rewrite:
 

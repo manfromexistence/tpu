@@ -178,7 +178,7 @@ layer-0 weights:
 | `(3*((q*p)&255))>>8` for the 5-op shift chain | instructions (~1.4x fewer) | -- | none (nb 11) |
 | `concatenate(-1)` for `stack(axis=1).reshape` | a layout conversion | 3.126 -> 1.866 | **1.33x** |
 | int16 lanes for int32 | element width | 1.866 -> 1.393 | **1.20x** |
-| one broadcast per group (byte-major) | nothing: adds a real interleave | 7.916 | 0.48x, worse |
+| one broadcast per group (byte-major) | nothing: adds a real interleave | 7.916 | 4.2x slower than `concatenate`, same trits |
 
 So the decode is neither instruction-bound nor program-bound. It is
 **data-movement bound inside the VPU**, and the way to make it faster is to stop
@@ -202,7 +202,10 @@ rather than unseparated.
 and in-block width, `BPC = IN // TC`). At TC=128 the two numbers coincide, which
 is why it survived every run on this track. At TC=512 the tile build aborts with
 `attn_qkv.weight 11468800 != 2867200`. The repaired chain is verified at TC
-128/512/1024 in `colab_run/check11.py`.
+128/512/1024 by `G:\Temp\UserTemp\opencode\colab_run\check11.py`, a no-TPU numpy
+check that lives outside the repo because `tpu/*/` allow-lists only `kernel.py`,
+`make_notebook.py`, `kernel-metadata.json`, `notebook.ipynb`, `receipt-*.json`
+and `*.md` (`.gitignore` lines 38-47).
 
 **Also settled: scoped VMEM is 16 MB and unpack intermediates scale with the
 in-block width.** A block covering all `BPC` in-blocks needs 74 MB and fails

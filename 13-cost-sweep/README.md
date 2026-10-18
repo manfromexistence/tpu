@@ -120,7 +120,9 @@ f32 scale block is below the 128-element floor).
 
 `G:\Temp\UserTemp\opencode\colab_run\check13.py` and `check13b.py` pull the
 load-bearing functions out of the shipped `kernel.py` with `ast` — so they test
-the shipped source, not a copy — and run them with numpy:
+the shipped source, not a copy — and run them with numpy. (They live outside the
+repo because `tpu/*/` allow-lists only `kernel.py`, `make_notebook.py`,
+`kernel-metadata.json`, `notebook.ipynb`, `receipt-*.json` and `*.md`.)
 
 | Check | Result |
 | --- | --- |

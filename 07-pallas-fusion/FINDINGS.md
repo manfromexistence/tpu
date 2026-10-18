@@ -255,13 +255,28 @@ and nowhere near 100. The remaining gap was in the unpack itself (§7), and
 **notebook 13 plus a second nb 11 session closed part of it: 29.66 tok/s now**,
 with the decode's spelling and lane width the only changes to the kernel.
 
-The headroom that remains is smaller than the 300x figure suggests. At 29.66
-tok/s the model runs 26.9 Gtrit/s; notebook 13's best decode cell for this
-weight is 38.5 Gtrit/s and its pure weight-DMA floor is 182 Gtrit/s. So a
-projection whose arithmetic were free would still spend ~0.45 ms of its current
-~1.5 ms on the load alone, and 100 tok/s at batch 32 needs 0.36 ms per
-equivalent projection -- **below the load floor**. 100 tok/s therefore requires
-a bigger batch (bf16 GDN state, `TPU-STATUS.md`), not a faster decode.
+The headroom that remains is smaller than the 300x figure suggests, but it is
+also no longer the binding constraint. At 29.66 tok/s the model runs
+26.9 Gtrit / 1.079 s = **24.9 Gtrit/s**, against 38.5 Gtrit/s for notebook 13's
+best decode cell and 182 Gtrit/s for its pure-DMA floor. Pricing the model's
+513 `attn_qkv`-equivalents at that measured 1.393 ms per cell accounts for
+~715 ms of the 1079 ms step, leaving ~364 ms of non-projection work (attention,
+GDN, norms, the output projection, sampling).
+
+That arithmetic decides the 100 tok/s question, and the answer is not "a faster
+decode":
+
+| target | step budget at batch 32 | verdict |
+| --- | --- | --- |
+| 100 tok/s | 320 ms | **out of reach at this batch**: the non-projection work alone is ~364 ms |
+
+Batch is the only way through, because the kernel is flat in batch: the same
+~1079 ms step carries 32 tokens, would carry 64 (~59 tok/s) and would carry 128
+(~119 tok/s). The block is the GDN recurrence's f32 state, ~151 MB per sequence
+per 48 layers: batch 64 needs bf16 state to fit next to the tiles, and batch 128
+does not fit even then. So the concrete route is **batch 64 plus a ~2.6x faster
+projection** (0.538 ms per `attn_qkv`-equivalent against 1.393 ms now) -- above
+the 0.291 ms load floor, so possible; not demonstrated, so not claimed.
 
 **How to pursue it -- rewritten 2026-10-18.** This used to read "run the
 separating experiment, re-optimise, and *only then* wire the fused kernel into
