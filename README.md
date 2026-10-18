@@ -7,12 +7,13 @@ credentials.
 
 **Bonsai 2 27B runs on a Colab TPU v5e-1** (notebook 04, first run 2026-10-16:
 greedy-decoded coherent English for 40 tokens at 0.27 tok/s), and the current
-best is **29.66 tok/s aggregate at batch 32** with every ternary projection
+best is **281.01 tok/s aggregate at batch 80** with every ternary projection
 served by a fused PTQ1_0 Pallas kernel that unpacks the weights in place
-(notebook 11, `[exec]` 2026-10-18). That is 1.94x the 15.31 tok/s the same
-notebook measured earlier in the same session, and the gain came from spelling
-the in-kernel decode so Mosaic does not pay for a layout conversion — not from
-any change to the algorithm. llama.cpp cannot use TPU silicon at all --
+(notebook 14, `[exec]` 2026-10-18). That is 9.5x the 29.66 tok/s notebook 11
+baseline, from one change: store the packed tiles so the **out-columns land on
+the 128 lanes** (`x @ w` over `(32, rows)`) instead of the 2-16-wide in-dim
+axis. The decoded weights are bit-identical; the rest came from the batch
+ladder -- step time is 245.6 ms at B=32 and 284.7 ms at B=80. llama.cpp cannot use TPU silicon at all --
 it has no
 TPU backend, so on a TPU VM it silently runs on the host CPU -- which is
 why this is a from-scratch JAX forward pass rather than a build of the
@@ -96,6 +97,7 @@ contract, and foldable linears. Two modes: **A** = offline BF16
 | 11 | `bonsai-fused-full` | The real 64-layer model, fully fused | `[exec]` **batch 32 = 29.66 tok/s**, gate `first token 11`; 15.31 -> 29.66 in one session with no algorithmic change |
 | 12 | `bonsai-bigdma` | 8 in-blocks per grid step | `[exec]` 13.30 tok/s -- the per-DMA-overhead hypothesis, refuted |
 | 13 | `cost-sweep` | What the fused kernel's cost actually is | `[exec]` decode is 82 % of the projection and it is **data movement**: `concatenate` 1.68x, int16 1.34x, broadcast order 4.2x worse |
+| 14 | `bonsai-transposed` | Lane-aligned tiles: out-columns on the 128 lanes | `[exec]` **batch 80 = 281.01 tok/s**, f16 state, TC 1024, gate `first token 11`; 9.5x notebook 11, text byte-identical |
 
 Measured on Colab TPU v5e-1 (`TPU v5 lite`, jax 0.7.2, 15.75 GiB HBM
 limit, Pallas present): **FWHT-1024 = 0.295 ms/call** (20-call mean,
@@ -135,4 +137,4 @@ then every FWHT test uses random signs and says so.
 - Do not delete build outputs or caches to free space; report instead.
 
 MIT OR Apache-2.0
-updated: 2026-10-18 04:20 UTC
+updated: 2026-10-18 05:45 UTC

@@ -10,6 +10,12 @@ real generation.
 1079 ms/step.** This is the fastest measured configuration on this track, and
 1.94x the 15.31 tok/s this same notebook measured earlier in the same session.
 
+**Superseded 2026-10-18 by notebook 14** (`bonsai-transposed`): same model,
+same gate, the same byte-identical text, **281.01 tok/s** at batch 80 -- 9.5x
+this notebook. The fix was to store the packed tiles so the out-columns sit on
+the 128 lanes. Everything below stays the correct description of the
+`(rows, 28)` layout and of what each notebook-11 change was worth.
+
 - correctness gate: first token `11` (`','`) -- exactly what notebook 08 expects,
   and unchanged from the baseline
 - generated text character-for-character the same as the baseline run and as
@@ -187,4 +193,4 @@ Needs `/content/04.py` (the uploaded copy of notebook 04) and the GGUF at
 `RECEIPT` (`/content/receipt-colab-tpu-11.json`).
 
 MIT OR Apache-2.0
-updated: 2026-10-18 04:20 UTC
+updated: 2026-10-18 05:45 UTC

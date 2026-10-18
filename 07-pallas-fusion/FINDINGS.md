@@ -278,6 +278,15 @@ does not fit even then. So the concrete route is **batch 64 plus a ~2.6x faster
 projection** (0.538 ms per `attn_qkv`-equivalent against 1.393 ms now) -- above
 the 0.291 ms load floor, so possible; not demonstrated, so not claimed.
 
+**Outcome, 2026-10-18 (notebook 14): both halves of that route were taken and
+the target was cleared.** The projection got its 4.4x from putting the
+out-columns on the 128 lanes (29.66 -> 130.25 tok/s at batch 32, same weights,
+bit-identical decode), and the batch ladder reached **batch 80 at 281.01
+tok/s** with f16 *storage* only (the GDN recurrence stayed fp32; measured peak
+15.67 of 15.75 GiB). The step budget table above asked for 320 ms at batch 32;
+the measured step is 284.7 ms carrying 80 tokens. See `TPU-STATUS.md` and
+`14-bonsai-transposed/README.md`.
+
 **How to pursue it -- rewritten 2026-10-18.** This used to read "run the
 separating experiment, re-optimise, and *only then* wire the fused kernel into
 the 64-layer scan". That order was wrong and it is retracted. It made
@@ -302,4 +311,4 @@ kernel is correct. The open question is purely how fast the unpack can be made,
 and it is answered on the model.
 
 MIT OR Apache-2.0
-updated: 2026-10-18 04:20 UTC
+updated: 2026-10-18 05:45 UTC

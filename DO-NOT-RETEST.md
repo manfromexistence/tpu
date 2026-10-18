@@ -51,6 +51,7 @@ Measuring the model costs the same and cannot be wrong in this way.
 | A core halt wedges the runtime across processes; only `colab restart-kernel` clears it | `07-pallas-fusion/FINDINGS.md` §1 |
 | Compile errors do **not** wedge the core, so compile-only variants batch into one process | same |
 | The `colab` 120 s auth timeout needs the `.pth` patch in `env/` | `env/colab_timeout_patch.py` |
+| A recycled session VM reverts to the stock stack (jax 0.7.2 / libtpu 0.0.21.1), which cannot compile any Pallas kernel (`Failed to deserialize the Mosaic module: expected <= 7 but got 8`) | session log 2026-10-18; re-pin with `colab_run/pin_stack.py` + `restart-kernel` (~2 min) |
 | v6e1 has no quota; T4 GPU returns `Service Unavailable` | session log |
 | Weights come from HF, not the Kaggle API (Kaggle 403s from Colab IPs) | `dl_hf.py` |
 
@@ -116,6 +117,12 @@ Layer-0 `blk.0.attn_qkv.weight`, 52.4 M params, `[5120, 10240]`:
   as a fact about 2-bit packing.** Its extraction used a broadcast-vector shift,
   which notebook 13 has since measured as 4.2x slower than the same trits
   concatenated, for reasons that have nothing to do with the packing width.
+
+**Lane-aligned decode (notebook 14, 2026-10-18).** Moving the out-columns onto
+the 128 lanes made the same layer-0 projection **4.4x faster end to end on the
+real model**: 29.66 -> 130.25 tok/s at batch 32. Do not reconcile that against
+the notebook 13 cells above -- those were measured on the old, lane-starved
+layout. See §8.
 
 ## 6. A correction: the "59 tok/s at batch 128" projection was against an impossible layout
 
@@ -217,6 +224,30 @@ the previous run's 6 GB of tiles stay resident and produce a
 `RuntimeBufferAllocationFailure` about 80 MB short of the true limit. That
 signature is not evidence about the batch size.
 
+## 8. The lane axis is the lever (notebook 14, measured 2026-10-18)
+
+**Settled: for every projection on this track, the out-columns must sit on
+the 128 lanes.** Pallas maps only the last two dims to the 8x128 register
+file, and Mosaic's layout solver puts a matmul RHS's free axis (N =
+out-columns) on the lanes. Notebook 11 computed `w @ x` from `(rows, 28)`
+tiles, which put 2-16 *in-dims* on the lanes. Flipping the tile to
+`(32, rows)` and computing `x @ w` is the change that took the real model
+from 29.66 to 281.01 tok/s.
+
+| Fact | Evidence |
+| --- | --- |
+| `x @ w` over `(32, rows)` decodes bit-identically to `w @ x` over `(rows, 28)` | `colab_run/check14.py`, 4 real geometries, maxdiff 0.0 |
+| the flipped block indexing reproduces `y = x @ W` on a simulated grid | `colab_run/check14b.py`, max err 7.6e-05 |
+| real model, lane flip alone: 29.66 -> 130.25 tok/s (4.4x) | `14-bonsai-transposed/README.md` (log; cache-on receipt 130.30) |
+| 28-byte rows cannot be a Pallas block dim (needs %8==0 or == the array dim), so the flip costs +14 % bytes | pad 28 -> 32; 6.37 GiB measured on device |
+| rebuilding the pallas callable per geometry (~400 calls/step) costs **nothing**; `CACHE` was a wrong hypothesis | 130.25 vs 130.30 tok/s, 0.04 % |
+| step time is nearly flat in batch at this layout: 245.6 ms (B=32) -> 284.7 ms (B=80) | `receipt-14-b80-f16-tc1024.json` |
+| f16 state storage with the recurrence still fp32 changed no output token in 32 steps | nb 14 runs, byte-identical text |
+
+Best measured configuration: **batch 80, f16 state storage, TC 1024 = 281.01
+tok/s** -- 9.5x the lane-starved baseline. The wall at batch 80 is memory
+(15.67 of 15.75 GiB), not the kernel.
+
 MIT OR Apache-2.0
-updated: 2026-10-18 04:20 UTC
+updated: 2026-10-18 05:45 UTC
 

@@ -2,18 +2,26 @@
 
 ## Current best (2026-10-18)
 
-**29.66 tok/s aggregate, batch 32, 1079 ms/step** — the real 64-layer model with
-every ternary projection served by a fused PTQ1_0 Pallas kernel that unpacks
-the weights in place. Notebook 11, `[exec]` on Colab TPU v5e-1, jax 0.11.2 /
-libtpu 0.0.50. Correctness gate `first token 11 ','`; generated text identical
-to the notebook 04 proof string below.
+**281.01 tok/s aggregate, batch 80, 284.7 ms/step** — the real 64-layer model
+with every ternary projection served by a fused PTQ1_0 Pallas kernel, on the
+**lane-aligned** tile layout. Notebook 14, `[exec]` on Colab TPU v5e-1, jax
+0.11.2 / libtpu 0.0.50. Correctness gate `first token 11 ','` in every run;
+generated text byte-identical to the notebook 04 proof string below.
 
-This is 1.94x the 15.31 tok/s this same notebook measured earlier in the same
-session, from three changes that leave the weights, the tile order, the kernels
-and the output text untouched: spell the decode with `concatenate` instead of
-`stack(axis=1).reshape` (1.33x), raise the out-tile to TC 512 (1.21x), and run
-the decode at int16 width (1.20x). The mechanism and the ablations behind each
-are in `DO-NOT-RETEST.md` §7.
+That is **9.5x** the notebook 11 baseline of 29.66 tok/s and 2.8x the 100 tok/s
+target, from one change: store the packed tiles transposed as `(32, rows)` and
+compute `x @ w`, so the out-columns sit on the **128-lane axis**. Notebook 11
+had put the in-dims on the lanes, so its decode ran on 2/8/16 lanes of 128.
+The decoded weights are bit-identical (proven without a TPU); the price is
++14% weight bytes (28 -> 32-byte rows). The rest is the batch ladder: step time
+is 245.6 ms at B=32 and 284.7 ms at B=80, so aggregate throughput scales nearly
+linearly with batch until the 15.75 GiB HBM wall (peak measured 15.67 GiB).
+Mechanism, ablations and the cache refutation:
+`14-bonsai-transposed/README.md`, `DO-NOT-RETEST.md` §8. The previous best,
+kept for the ablation history: 29.66 tok/s was 1.94x the 15.31 tok/s the same
+notebook 11 measured earlier in that session, from spelling the decode with
+`concatenate` instead of `stack(axis=1).reshape` (1.33x), raising the out-tile
+to TC 512 (1.21x) and int16 decode width (1.20x) — `DO-NOT-RETEST.md` §7.
 
 | step | tok/s | receipt |
 | --- | --- | --- |
@@ -25,6 +33,10 @@ are in `DO-NOT-RETEST.md` §7.
 | nb 11, `concatenate` decode, TC 128, int32 | 20.35 | `11-bonsai-fused-full/receipt-dec-cat-int32-tc128.json` |
 | nb 11, `concatenate` decode, TC 512, int32 | 24.68 | log only (receipt overwritten) |
 | **nb 11, `concatenate` decode, TC 512, int16** | **29.66** | `11-bonsai-fused-full/receipt-dec-cat-int16-tc512.json` |
+| **nb 14 lane-aligned, batch 80, f16 state, TC 1024** | **281.01** | `14-bonsai-transposed/receipt-14-b80-f16-tc1024.json` |
+| nb 14, batch 80, f16 state, TC 512 | 266.37 | `14-bonsai-transposed/receipt-14-b80-f16-tc512.json` |
+| nb 14, batch 32, f16 state, TC 512 | 134.67 | `14-bonsai-transposed/receipt-14-b32-f16-tc512.json` |
+| nb 14, batch 32, f32 state, TC 512 (lane flip alone) | 130.30 | `14-bonsai-transposed/receipt-14-b32-f32-tc512.json` |
 
 ## Result (2026-10-17, first TPU run of this model)
 
@@ -161,6 +173,10 @@ per step), not bandwidth or recompile. 100 tok/s aggregate would need
 batch ~300, which does not fit in 16 GiB HBM. Reaching 100 requires fused
 decode-into-matvec (Pallas, broken on this stack) or larger hardware.
 
+**Superseded 2026-10-18: notebook 14 reaches 281.01 tok/s at batch 80** with
+fused decode-into-matvec on a v5e-1 -- no larger hardware. The paragraph above
+is kept as the notebook-06 state of knowledge.
+
 ## Fused PTQ1_0 matmul in Pallas: works (2026-10-18, [exec] on v5e-1)
 
 The clause "Pallas, broken on this stack" above is **withdrawn**. The fused
@@ -230,18 +246,21 @@ repack: its `(b >> 2j) & 3` extraction over a broadcast axis is the same class
 of column interleave, so its 7.5x penalty is evidence about the extraction
 pattern rather than about 2-bit packing.
 
-The whole model now runs at 26.9 Gtrit / 1.079 s = **24.9 Gtrit/s**, against a
+The whole model then ran at 26.9 Gtrit / 1.079 s = **24.9 Gtrit/s**, against a
 per-projection decode ceiling of 38.5 Gtrit/s (`dec16`, TO=1024) and a pure-DMA
-floor of 182 Gtrit/s. Two levers remain, in this order:
+floor of 182 Gtrit/s. Two levers were listed here; **both were taken by
+notebook 14 and both paid**:
 
 1. **Batch.** Kernel cost is flat in batch (4.04 ms at B=1, 4.18 ms at B=128), so
    throughput scales with batch at constant step time. The GDN recurrence holds
-   ~151 MB of f32 state per sequence per 48 layers: batch 64 needs 9.7 GB next
-   to 6.1 GB of tiles and does not fit in 15.75 GiB. bf16 state fits at ~4.8 GB
-   and changes the recurrence's numerics, which is why it has not been done
-   blind. This is the largest single lever left.
-2. **`TC = 1024`.** 1.361 ms against 1.393 ms for the decode and 3.254 against
-   3.289 ms for the whole projection: 2-3 % for a one-line change, not applied.
+   ~151 MB of f32 state per sequence per 48 layers. Notebook 14 added f16
+   **storage** with the recurrence left in fp32 (cast in and out, so the
+   recurrence's numerics are unchanged) and measured 32 -> 80 at 2.09x
+   aggregate, 134.67 -> 281.01 tok/s, stopping at the HBM wall (peak 15.67 of
+   15.75 GiB) rather than at a throughput wall.
+2. **`TC = 1024`.** It was worth +5.5 % at batch 80 (266.37 -> 281.01), not
+   the 2-3 % the isolated notebook 13 cells suggested; both numbers are
+   receipts in `14-bonsai-transposed/`.
 
 MIT OR Apache-2.0
-updated: 2026-10-18 04:20 UTC
+updated: 2026-10-18 05:45 UTC
