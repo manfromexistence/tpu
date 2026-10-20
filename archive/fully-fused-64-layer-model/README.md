@@ -179,7 +179,7 @@ S=<session>
 colab exec -s $S --timeout 1800 -f .../pin_stack.py        # jax 0.11.2 + libtpu 0.0.50
 colab restart-kernel -s $S
 colab exec -s $S --timeout 1800 -f .../dl_hf.py            # 5,946,648,928 bytes
-colab upload .../04-reference-forward-pass/kernel.py /content/04.py -s $S
+colab upload .../reference-forward-pass/kernel.py /content/04.py -s $S
 
 # the model
 colab restart-kernel -s $S            # mandatory: the previous run's tiles stay resident

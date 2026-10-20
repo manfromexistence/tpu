@@ -20,7 +20,7 @@
       "ms_per_step": 180.6,
       "peak_gib": 14.46,
       "in_use_gib": 9.27,
-      "receipt": "receipt-14-b1-f16-tc1024-fused.json"
+      "receipt": "receipt-b1-f16-tc1024-fused.json"
     },
     {
       "max_t": 8192,
@@ -30,7 +30,7 @@
       "ms_per_step": 216.3,
       "peak_gib": 9.53,
       "in_use_gib": 8.1,
-      "receipt": "receipt-14-b1-f16-tc1024-franch.json"
+      "receipt": "receipt-b1-f16-tc1024-franch.json"
     },
     {
       "max_t": 45056,
@@ -40,7 +40,7 @@
       "ms_per_step": 350.1,
       "peak_gib": 14.01,
       "in_use_gib": 12.57,
-      "receipt": "receipt-14-b1-f16-tc1024-45056.json"
+      "receipt": "receipt-b1-f16-tc1024-45056.json"
     },
     {
       "max_t": 49152,

@@ -27,7 +27,7 @@ at all, so the four 2-bit planes can be contracted as four clean matmuls.
 Verified locally (no TPU): the reference loop, a vectorised form and a
 four-plane split agree on 200 random super-blocks.
 
-See `tpu/TODO.md` item TPU-08 and `tpu/14-lane-aligned-ternary-kernel/README.md`.
+See `tpu/TODO.md` item TPU-08 and `tpu/lane-aligned-ternary-kernel/README.md`.
 """
 import numpy as np
 

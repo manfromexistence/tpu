@@ -9,7 +9,7 @@ the model's own weight matrix exactly (maxdiff 0.0) and the fused matmul
 matches to bf16 rounding (1.65e-02 on ref|max| 5.46 at B=128).
 
 Three traps, every one of which cost a debugging cycle (see
-`tpu/07-pallas-matmul-findings/FINDINGS.md` for the full write-up):
+`tpu/pallas-matmul-findings/FINDINGS.md` for the full write-up):
 
 1. `pl.BlockSpec` index maps return BLOCK indices, not element offsets.
    Pallas multiplies them by the block shape.  Passing `(m*BPC + k)*TC`
@@ -22,7 +22,7 @@ Three traps, every one of which cost a debugging cycle (see
 3. `dec.reshape((IN, OUT), order="F")` is NOT
    `dec.reshape(-1).reshape((IN, OUT), order="F")`.  On layer-0 qkv they
    disagree in 89% of entries, and the model uses the second form
-   (`tpu/04-reference-forward-pass/kernel.py:280-281`).
+   (`tpu/reference-forward-pass/kernel.py:280-281`).
 
 Needs jax 0.11.2 + libtpu 0.0.50 (FINDINGS.md §1) and the GGUF on the host.
 """

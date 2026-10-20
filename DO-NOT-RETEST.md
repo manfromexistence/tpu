@@ -241,7 +241,7 @@ from 29.66 to 281.01 tok/s.
 | real model, lane flip alone: 29.66 -> 130.25 tok/s (4.4x) | `14-lane-aligned-ternary-kernel/README.md` (log; cache-on receipt 130.30) |
 | 28-byte rows cannot be a Pallas block dim (needs %8==0 or == the array dim), so the flip costs +14 % bytes | pad 28 -> 32; 6.37 GiB measured on device |
 | rebuilding the pallas callable per geometry (~400 calls/step) costs **nothing**; `CACHE` was a wrong hypothesis | 130.25 vs 130.30 tok/s, 0.04 % |
-| step time is nearly flat in batch at this layout: 245.6 ms (B=32) -> 284.7 ms (B=80) | `receipt-14-b80-f16-tc1024.json` |
+| step time is nearly flat in batch at this layout: 245.6 ms (B=32) -> 284.7 ms (B=80) | `receipt-b80-f16-tc1024.json` |
 | f16 state storage with the recurrence still fp32 changed no output token in 32 steps | nb 14 runs, byte-identical text |
 
 Best measured configuration: **batch 80, f16 state storage, TC 1024 = 281.01
@@ -252,11 +252,11 @@ tok/s** -- 9.5x the lane-starved baseline. The wall at batch 80 is memory
 
 | Fact | Evidence |
 | --- | --- |
-| all 64 layers in one `jax.jit` compiles in **139.6 s** and runs the model at **180.6 ms/step** (batch 1, `max_t` 8192): **5.54 tok/s**, first token 271, output byte-identical to the per-layer-jit run | `14-lane-aligned-ternary-kernel/receipt-14-b1-f16-tc1024-fused.json` against `receipt-14-b1-f16-tc1024-franch.json` (4.62 tok/s) |
+| all 64 layers in one `jax.jit` compiles in **139.6 s** and runs the model at **180.6 ms/step** (batch 1, `max_t` 8192): **5.54 tok/s**, first token 271, output byte-identical to the per-layer-jit run | `14-lane-aligned-ternary-kernel/receipt-b1-f16-tc1024-fused.json` against `receipt-b1-f16-tc1024-franch.json` (4.62 tok/s) |
 | **Do not close over the weight tiles.** JAX then captures the whole weight set as constants: *"A large amount of constants were captured during lowering (6.95GB total)"*. The compile never finished and the kernel connection dropped 2 h 12 m later with the job still running | session log 2026-10-19 13:11-15:23 |
 | pass the per-layer weight pytree as an **argument** and the same program compiles in 139.6 s | same |
 | a persistent compile cache (`jax_compilation_cache_dir=/content/jaxcache`) makes the rerun's prefill 4.6 s instead of a fresh compile | same run, prefill line |
-| the correctness gate value is **prompt-dependent**: `Hello` -> first token 11 `','`; a 17-token prompt -> 271. A check that expects one value for every prompt will abort a good run | `14-lane-aligned-ternary-kernel/receipt-14-b1-f16-tc1024-fused-smoke.json`, `receipt-14-b1-f16-tc1024-fused.json` |
+| the correctness gate value is **prompt-dependent**: `Hello` -> first token 11 `','`; a 17-token prompt -> 271. A check that expects one value for every prompt will abort a good run | `14-lane-aligned-ternary-kernel/receipt-b1-f16-tc1024-fused-smoke.json`, `receipt-b1-f16-tc1024-fused.json` |
 
 ## 10. The step is **not** launch-overhead-bound: the projections' own work is the cost
 
@@ -265,9 +265,9 @@ tok/s** -- 9.5x the lane-starved baseline. The wall at batch 80 is memory
 
 | Fact | Evidence |
 | --- | --- |
-| 180.6 ms/step at batch 1 (`max_t` 8192) against 284.7 ms/step at batch 80 (`max_t` 64): 80 sequences cost 1.58x one sequence | `14-lane-aligned-ternary-kernel/receipt-14-b1-f16-tc1024-fused.json`, `receipt-14-b80-f16-tc1024.json` |
+| 180.6 ms/step at batch 1 (`max_t` 8192) against 284.7 ms/step at batch 80 (`max_t` 64): 80 sequences cost 1.58x one sequence | `14-lane-aligned-ternary-kernel/receipt-b1-f16-tc1024-fused.json`, `receipt-b80-f16-tc1024.json` |
 | the step launches ~400 projections (48 GDN layers x 6 + 16 attention layers x 7) | `14-lane-aligned-ternary-kernel/kernel.py` |
-| **CORRECTION: the launches are not the cost.** Merging the projections that share an input took the launch count from 400 to 256 -- **36 % fewer -- and the step time moved from 182.3 ms to 181.3 ms, i.e. 0.5 %.** The first token is `271` in both runs and the 64 generated tokens are byte-identical, so the fusion is exact | `14-lane-aligned-ternary-kernel/receipt-14-fuse0-b1-f16-tc1024.json`, `receipt-14-fuse1-b1-f16-tc1024.json` |
+| **CORRECTION: the launches are not the cost.** Merging the projections that share an input took the launch count from 400 to 256 -- **36 % fewer -- and the step time moved from 182.3 ms to 181.3 ms, i.e. 0.5 %.** The first token is `271` in both runs and the 64 generated tokens are byte-identical, so the fusion is exact | `14-lane-aligned-ternary-kernel/receipt-fuse0-b1-f16-tc1024.json`, `receipt-fuse1-b1-f16-tc1024.json` |
 | what the step really pays for is the **per-weight-byte VPU work**: the ternary unpack of 6.37 GiB of packed bytes, every token, for every sequence. That is why 80 streams share one unpack and one stream pays it alone | same receipts; `13-projection-cost-breakdown/README.md:28` (the unpack is 82 % of a projection) |
 | the traffic floor is 6.37 GiB / 709 GB/s = 9.0 ms, so the step is ~20x off the HBM roofline | `13-projection-cost-breakdown/README.md:28` |
 | **consequence:** 50 tok/s (20 ms/step) needs the unpack itself to be ~9x faster, or a pass that processes several tokens against the same unpacked weights (`TODO.md` `TPU-03`, `TPU-07`) | same |
@@ -276,8 +276,8 @@ tok/s** -- 9.5x the lane-starved baseline. The wall at batch 80 is memory
 
 | Fact | Evidence |
 | --- | --- |
-| `max_t` 45056 runs: 2.86 tok/s, 350.1 ms/step, peak 14.01 GiB | `14-lane-aligned-ternary-kernel/receipt-14-b1-f16-tc1024-45056.json` |
-| `max_t` 49152 is **140 MB short** of loading `jit_attn_step` (needs 2.44 GB, 2.30 GB free) | `14-lane-aligned-ternary-kernel/receipt-14-mem-ceiling.json` |
+| `max_t` 45056 runs: 2.86 tok/s, 350.1 ms/step, peak 14.01 GiB | `14-lane-aligned-ternary-kernel/receipt-b1-f16-tc1024-45056.json` |
+| `max_t` 49152 is **140 MB short** of loading `jit_attn_step` (needs 2.44 GB, 2.30 GB free) | `14-lane-aligned-ternary-kernel/receipt-mem-ceiling.json` |
 | `max_t` 65536 needs 3.26 GB with 184.53 MB free | same |
 | fp32 KV is 128 KiB/token/sequence; q4 would be 16 KiB, making 64k fit at ~11.3 GiB -- **not implemented**: there is no q4 KV path and no blocked or paged attention | same |
 
@@ -307,10 +307,10 @@ every arm was numerically exact (first token `271`, identical generated text).
 
 | arm | ms/step | tok/s | receipt |
 | --- | --- | --- | --- |
-| shipped | 159.7 | 6.26 | `14-lane-aligned-ternary-kernel/receipt-14-base-b1-f16-tc1024.json` |
-| `NOCONCAT=1` | 189.2 | 5.28 | `receipt-14-nc-b1-f16-tc1024.json` |
-| `GQA=1` | **134.3** | **7.45** | `receipt-14-gqa-b1-f16-tc1024.json` |
-| both | 163.9 | 6.10 | `receipt-14-both-b1-f16-tc1024.json` |
+| shipped | 159.7 | 6.26 | `14-lane-aligned-ternary-kernel/receipt-base-b1-f16-tc1024.json` |
+| `NOCONCAT=1` | 189.2 | 5.28 | `receipt-nc-b1-f16-tc1024.json` |
+| `GQA=1` | **134.3** | **7.45** | `receipt-gqa-b1-f16-tc1024.json` |
+| both | 163.9 | 6.10 | `receipt-both-b1-f16-tc1024.json` |
 
 | Fact | Why it is settled |
 | --- | --- |

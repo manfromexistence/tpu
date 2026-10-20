@@ -1,4 +1,4 @@
-# `tpu/pq2-2bit-weight-format/` — the 2-bit `PQ2_0` weight format, pinned down locally
+# `tpu/ternary-2bit-weight-format/` — the 2-bit `PQ2_0` weight format, pinned down locally
 
 `prism-ml/Ternary-Bonsai-2-27B-gguf` publishes **two** encodings of the same model:
 
@@ -32,7 +32,7 @@ against each other:
 **Verified locally, with no TPU:** all three agree on 200 random super-blocks.
 
 ```
-$ python tpu/pq2-2bit-weight-format/tq2_decode.py
+$ python tpu/ternary-2bit-weight-format/tq2_decode.py
 TQ2_0 decode: the C loop, the vectorised form and the four-plane split agree on
 200 random super-blocks
 ```
@@ -104,7 +104,7 @@ super-blocks into the `(88, rows)` tile with the permuted row order.
 
 * the correctness gate is unchanged: first token `11` for the prompt `Hello`,
   `271` for the 17-token prompt, and the generated text byte-identical to
-  `receipt-14-b1-f16-tc1024-fused.json`;
+  `receipt-b1-f16-tc1024-fused.json`;
 * `unfold(fold(z))` still round-trips (`kernel.py` prints `max|R@R - I| = 0.0`);
 * the step time at 8k / batch 1 is below the PTQ1_0 number, and the receipts
   record `proj_format: pq2_0` so the two are never compared without saying which

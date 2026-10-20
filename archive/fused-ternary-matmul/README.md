@@ -3,7 +3,7 @@
 Status: **the kernel works and is numerically validated on real weights.**
 Throughput is not yet the goal -- see §4.
 
-This closes the blocker recorded in `tpu/07-pallas-matmul-findings/FINDINGS.md`. That
+This closes the blocker recorded in `tpu/pallas-matmul-findings/FINDINGS.md`. That
 file's original diagnosis (a Mosaic lowering bug) was wrong; §4 there
 retracts it and names the two harness bugs that actually caused every
 failure. Read it before changing anything here.
@@ -28,7 +28,7 @@ blocks are streamed as-is.
 
 ## 2. How to run it
 
-Needs the Colab TPU environment from `tpu/07-pallas-matmul-findings/FINDINGS.md` §1
+Needs the Colab TPU environment from `tpu/pallas-matmul-findings/FINDINGS.md` §1
 (jax 0.11.2 + libtpu 0.0.50) and the GGUF at
 `/content/gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf`.
 
@@ -85,7 +85,7 @@ Better than notebook 09's 4.0 tok/s, and short of 100. The GDN recurrence
 caps batch near 32, so ~15 tok/s is the realistic landing point for this
 kernel; the rest has to come out of the unpack, which currently runs at
 ~12.8 Gtrit/s, roughly **300x below the HBM roofline** (2.8 GB/s effective
-against ~820 GB/s). See `tpu/07-pallas-matmul-findings/FINDINGS.md` §7 for the two
+against ~820 GB/s). See `tpu/pallas-matmul-findings/FINDINGS.md` §7 for the two
 live hypotheses (layout shuffles vs 3200-program launch overhead) and the
 experiment that separates them.
 

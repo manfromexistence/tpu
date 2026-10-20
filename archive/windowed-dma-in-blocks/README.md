@@ -96,7 +96,7 @@ the batch cannot grow much further without storing the recurrent state in bf16.
 
 ```text
 jax==0.11.2  jaxlib==0.11.2  libtpu==0.0.50
-/content/04.py     <- tpu/04-reference-forward-pass/kernel.py
+/content/04.py     <- tpu/reference-forward-pass/kernel.py
 /content/gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf   (5,946,648,928 bytes)
 ```
 

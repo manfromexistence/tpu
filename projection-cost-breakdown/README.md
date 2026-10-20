@@ -182,7 +182,7 @@ colab exec -s $S --timeout 2400 --env TC=512 -f /mnt/g/Dx/tpu/11-fully-fused-64-
 # 2. the cost breakdown, same session
 colab restart-kernel -s $S
 sleep 12
-colab exec -s $S --timeout 900 -f /mnt/g/Dx/tpu/13-projection-cost-breakdown/kernel.py
+colab exec -s $S --timeout 900 -f /mnt/g/Dx/tpu/projection-cost-breakdown/kernel.py
 ```
 
 Step 2 takes about 25 seconds: compile dominates, and the measured kernel time is

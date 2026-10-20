@@ -55,24 +55,24 @@ simulated grid (`colab_run/check14b.py`: `y = x @ W`, max err 7.6e-05). The
 | batch | state | TC | tok/s | ms/step | receipt |
 | --- | --- | --- | --- | --- | --- |
 | 32 | f32 | 512 | 130.25 | 245.7 | log only (cache 0; receipt overwritten) |
-| 32 | f32 | 512 | 130.30 | 245.6 | `receipt-14-b32-f32-tc512.json` |
-| 32 | f16 | 512 | 134.67 | 237.6 | `receipt-14-b32-f16-tc512.json` |
-| 48 | f16 | 512 | 187.09 | 256.6 | `receipt-14-b48-f16-tc512.json` |
-| 48 | f16 | 1024 | 203.01 | 236.4 | `receipt-14-b48-f16-tc1024.json` |
-| 64 | f16 | 512 | 217.49 | 294.3 | `receipt-14-b64-f16-tc512.json` |
-| 64 | f16 | 1024 | 239.25 | 267.5 | `receipt-14-b64-f16-tc1024.json` |
-| 80 | f16 | 512 | 266.37 | 300.3 | `receipt-14-b80-f16-tc512.json` |
+| 32 | f32 | 512 | 130.30 | 245.6 | `receipt-b32-f32-tc512.json` |
+| 32 | f16 | 512 | 134.67 | 237.6 | `receipt-b32-f16-tc512.json` |
+| 48 | f16 | 512 | 187.09 | 256.6 | `receipt-b48-f16-tc512.json` |
+| 48 | f16 | 1024 | 203.01 | 236.4 | `receipt-b48-f16-tc1024.json` |
+| 64 | f16 | 512 | 217.49 | 294.3 | `receipt-b64-f16-tc512.json` |
+| 64 | f16 | 1024 | 239.25 | 267.5 | `receipt-b64-f16-tc1024.json` |
+| 80 | f16 | 512 | 266.37 | 300.3 | `receipt-b80-f16-tc512.json` |
 | 80 | f16 | 1024 | 279.46 | (repeat) | log only |
-| **80** | **f16** | **1024** | **281.01** | **284.7** | `receipt-14-b80-f16-tc1024.json` |
+| **80** | **f16** | **1024** | **281.01** | **284.7** | `receipt-b80-f16-tc1024.json` |
 
 ### Single stream (batch 1), 2026-10-19 -- one conversation, not 80
 
 | window | kernel | prompt | tok/s | ms/step | peak | receipt |
 | --- | --- | --- | --- | --- | --- | --- |
-| 8192 | per-layer jit | `what is the capital of franch, india and bangaldesh and give me tps` | 4.62 | 216.3 | 9.53 GiB | `receipt-14-b1-f16-tc1024-franch.json` |
-| 8192 | **fused step** | same prompt, 17 tokens | **5.54** | **180.6** | 14.46 GiB | `receipt-14-b1-f16-tc1024-fused.json` |
-| 8192 | fused step | `Hello` (1 token) | 5.55 | 180.3 | 9.28 GiB | `receipt-14-b1-f16-tc1024-fused-smoke.json` |
-| 45056 | per-layer jit | `Hello, who are you?` | 2.86 | 350.1 | 14.01 GiB | `receipt-14-b1-f16-tc1024-45056.json` |
+| 8192 | per-layer jit | `what is the capital of franch, india and bangaldesh and give me tps` | 4.62 | 216.3 | 9.53 GiB | `receipt-b1-f16-tc1024-franch.json` |
+| 8192 | **fused step** | same prompt, 17 tokens | **5.54** | **180.6** | 14.46 GiB | `receipt-b1-f16-tc1024-fused.json` |
+| 8192 | fused step | `Hello` (1 token) | 5.55 | 180.3 | 9.28 GiB | `receipt-b1-f16-tc1024-fused-smoke.json` |
+| 45056 | per-layer jit | `Hello, who are you?` | 2.86 | 350.1 | 14.01 GiB | `receipt-b1-f16-tc1024-45056.json` |
 
 The two 8k rows with the same prompt are the only apples-to-apples pair in
 this file: same window, same batch, same 17-token prompt, same 64 generated
@@ -80,7 +80,7 @@ tokens, **byte-identical output** (`first token 271` in both, same sample
 string). The difference is the kernel: 216.3 -> 180.6 ms/step, **+20 %**.
 
 The 45056 row is the largest fp32 window that runs at all, and it does so
-slowly. `receipt-14-mem-ceiling.json` records the ceiling: 49152 is 140 MB
+slowly. `receipt-mem-ceiling.json` records the ceiling: 49152 is 140 MB
 short of loading `jit_attn_step` and 65536 wants 3.26 GB with 184 MB free.
 
 What each knob was worth, holding the rest fixed:
@@ -106,8 +106,8 @@ unpacked weights, which is the largest single term in the projection's memory tr
 fourteen separate matmuls instead, skipping both concatenations; at batch 1 the MXU is
 ~99 % idle, so the smaller K dimension costs no measurable arithmetic. The A/B
 (`NOCONCAT=0` against `NOCONCAT=1`, 8k window, batch 1) is queued on a TPU session; its
-receipts land as `receipt-14-nc0-b1-f16-tc1024.json` and
-`receipt-14-nc1-b1-f16-tc1024.json`.
+receipts land as `receipt-nc0-b1-f16-tc1024.json` and
+`receipt-nc1-b1-f16-tc1024.json`.
 
 ## The fused step (2026-10-19)
 
@@ -153,15 +153,15 @@ continuation and `MAX_T` the context. Before this, only the first prompt token
 was consumed, which is why every earlier run repeated the same continuation. A
 single-token prompt (`PROMPT=Hello`) takes the exact path the receipts above
 used, so they remain reproducible. Two receipts with a 19-token prompt on this
-build: `receipt-14-prompt-b80-f16-tc1024.json` (batch 80, 64 generated, 268.3
-tok/s) and `receipt-14-prompt-b64-f16-tc1024.json` (batch 64, 128 generated,
+build: `receipt-prompt-b80-f16-tc1024.json` (batch 80, 64 generated, 268.3
+tok/s) and `receipt-prompt-b64-f16-tc1024.json` (batch 64, 128 generated,
 207.1 tok/s -- long enough to reach the answered part of the continuation).
 
 **Context cost at fixed batch, measured 2026-10-20 (batch 1, the fused step, one
 prompt throughout):** `max_t` 83 -> **152.3 ms/step (6.57 tok/s)**, `max_t` 1024 ->
 153.6 ms (6.51 tok/s), `max_t` 8192 -> **180.9 ms (5.53 tok/s)** -- receipts
-`receipt-14-ctx64-b1-f16-tc1024.json`, `receipt-14-ctx1024-b1-f16-tc1024.json`,
-`receipt-14-ctx8192-b1-f16-tc1024.json`. **The whole 8k window costs 19 %** at batch
+`receipt-ctx64-b1-f16-tc1024.json`, `receipt-ctx1024-b1-f16-tc1024.json`,
+`receipt-ctx8192-b1-f16-tc1024.json`. **The whole 8k window costs 19 %** at batch
 1, which makes the unpack, not the context, the thing to fix for single-stream
 throughput. The `max_t` 45056 point needs `FUSE=0`: with the fused step it does not
 compile (*"CompileTimeHbmOom: ... HLO temporaries (18.92G) exceeds available HBM
@@ -182,10 +182,10 @@ neither has been isolated; `TODO.md` `TPU-06` files the measurement.
 What is solid, because it was measured at fixed batch and fixed window: a
 long-context run trades throughput for reach. Same 41-token prompt, batch 48 /
 256 generated at `max_t` 320 measured 75.2 tok/s
-(`receipt-14-dxprompt-b48-f16-tc1024.json`), batch 80 / `max_t` 96 / 44
-generated measured 268.2 tok/s (`receipt-14-dxprompt-b80-f16-tc1024.json`),
+(`receipt-dxprompt-b48-f16-tc1024.json`), batch 80 / `max_t` 96 / 44
+generated measured 268.2 tok/s (`receipt-dxprompt-b80-f16-tc1024.json`),
 and batch 32 / 460 generated at `max_t` 512 measured 48.3 tok/s
-(`receipt-14-essay-b32-f16-tc1024.json`).
+(`receipt-essay-b32-f16-tc1024.json`).
 
 MIT OR Apache-2.0
 updated: 2026-10-20 21:20 UTC

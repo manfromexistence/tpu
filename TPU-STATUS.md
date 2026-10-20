@@ -5,7 +5,7 @@
 **Two numbers, two different quantities.** Aggregate: **281.01 tok/s, batch 80,
 284.7 ms/step**. Single stream: **5.54 tok/s, 180.6 ms/step** at an 8k context
 window, measured 2026-10-19 with the 64-layer step fused into one jitted
-program (`14-lane-aligned-ternary-kernel/receipt-14-b1-f16-tc1024-fused.json`). The
+program (`14-lane-aligned-ternary-kernel/receipt-b1-f16-tc1024-fused.json`). The
 aggregate is 80 conversations advancing in lockstep; the single-stream figure is
 one conversation. They are not alternatives and must not be quoted as if they
 were.
@@ -41,13 +41,13 @@ to TC 512 (1.21x) and int16 decode width (1.20x) — `DO-NOT-RETEST.md` §7.
 | nb 11, `concatenate` decode, TC 128, int32 | 20.35 | `archive/11-fully-fused-64-layer-model/receipt-dec-cat-int32-tc128.json` |
 | nb 11, `concatenate` decode, TC 512, int32 | 24.68 | log only (receipt overwritten) |
 | **nb 11, `concatenate` decode, TC 512, int16** | **29.66** | `archive/11-fully-fused-64-layer-model/receipt-dec-cat-int16-tc512.json` |
-| **nb 14 lane-aligned, batch 80, f16 state, TC 1024** | **281.01** | `14-lane-aligned-ternary-kernel/receipt-14-b80-f16-tc1024.json` |
-| nb 14, batch 1, 8k window, per-layer jit | 4.62 | `14-lane-aligned-ternary-kernel/receipt-14-b1-f16-tc1024-franch.json` |
-| **nb 14, batch 1, 8k window, fused 64-layer step** | **5.54** | `14-lane-aligned-ternary-kernel/receipt-14-b1-f16-tc1024-fused.json` |
-| nb 14, batch 1, 45k window, fp32 KV | 2.86 | `14-lane-aligned-ternary-kernel/receipt-14-b1-f16-tc1024-45056.json` |
-| nb 14, batch 80, f16 state, TC 512 | 266.37 | `14-lane-aligned-ternary-kernel/receipt-14-b80-f16-tc512.json` |
-| nb 14, batch 32, f16 state, TC 512 | 134.67 | `14-lane-aligned-ternary-kernel/receipt-14-b32-f16-tc512.json` |
-| nb 14, batch 32, f32 state, TC 512 (lane flip alone) | 130.30 | `14-lane-aligned-ternary-kernel/receipt-14-b32-f32-tc512.json` |
+| **nb 14 lane-aligned, batch 80, f16 state, TC 1024** | **281.01** | `14-lane-aligned-ternary-kernel/receipt-b80-f16-tc1024.json` |
+| nb 14, batch 1, 8k window, per-layer jit | 4.62 | `14-lane-aligned-ternary-kernel/receipt-b1-f16-tc1024-franch.json` |
+| **nb 14, batch 1, 8k window, fused 64-layer step** | **5.54** | `14-lane-aligned-ternary-kernel/receipt-b1-f16-tc1024-fused.json` |
+| nb 14, batch 1, 45k window, fp32 KV | 2.86 | `14-lane-aligned-ternary-kernel/receipt-b1-f16-tc1024-45056.json` |
+| nb 14, batch 80, f16 state, TC 512 | 266.37 | `14-lane-aligned-ternary-kernel/receipt-b80-f16-tc512.json` |
+| nb 14, batch 32, f16 state, TC 512 | 134.67 | `14-lane-aligned-ternary-kernel/receipt-b32-f16-tc512.json` |
+| nb 14, batch 32, f32 state, TC 512 (lane flip alone) | 130.30 | `14-lane-aligned-ternary-kernel/receipt-b32-f32-tc512.json` |
 
 ## The 50 tok/s target is a TPU target (2026-10-20)
 
@@ -57,8 +57,8 @@ kernel** at 50 tok/s for one stream on an 8k window, and the state of it is:
 
 | fact | value | receipt |
 | --- | --- | --- |
-| one stream, 8k window, the 64-layer step fused into one jit | **5.52 tok/s** (181.3 ms/step) | `14-lane-aligned-ternary-kernel/receipt-14-fuse1-b1-f16-tc1024.json` |
-| 80 streams, 64-token window | 284.7 ms/step (281.01 tok/s aggregate) | `14-lane-aligned-ternary-kernel/receipt-14-b80-f16-tc1024.json` |
+| one stream, 8k window, the 64-layer step fused into one jit | **5.52 tok/s** (181.3 ms/step) | `14-lane-aligned-ternary-kernel/receipt-fuse1-b1-f16-tc1024.json` |
+| 80 streams, 64-token window | 284.7 ms/step (281.01 tok/s aggregate) | `14-lane-aligned-ternary-kernel/receipt-b80-f16-tc1024.json` |
 | weight-traffic floor on this slice | 6.37 GiB / 709 GB/s = **9.0 ms** | `13-projection-cost-breakdown/README.md:28` |
 | the step is ~20x off that floor, and the unpack is 82 % of a projection | — | `DO-NOT-RETEST.md` section 10 |
 | kernel launches are **not** the cost: 36 % fewer launches moved the step 0.5 % | — | `DO-NOT-RETEST.md` section 10 |
@@ -220,7 +220,7 @@ is kept as the notebook-06 state of knowledge.
 The clause "Pallas, broken on this stack" above is **withdrawn**. The fused
 ternary kernel compiles, runs and is numerically correct on real weights.
 Its cost was two bugs in the test harness, documented in
-`tpu/07-pallas-matmul-findings/FINDINGS.md` §4:
+`tpu/pallas-matmul-findings/FINDINGS.md` §4:
 
 - `pl.BlockSpec` index maps return **block** indices, not element offsets;
   passing offsets walked 128x outside the array and halted the core with

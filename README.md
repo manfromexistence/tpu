@@ -165,7 +165,7 @@ then every FWHT test uses random signs and says so.
   are kept only for the record: `out-of-scope-gpu/gpu-llamacpp-t4-baseline/`, `out-of-scope-gpu/gpu-mtp-head-availability-test/`, `out-of-scope-gpu/gpu-draft-model-speculation-test/`,
   `out-of-scope-gpu/gpu-draft-model-two-t4-test/`, `out-of-scope-gpu/gpu-mtp-head-graft-test/`. Do not run them.**
 - Never commit `colab-env-patch.ps1`, tokens, cookies, or service-account keys.
-  `.gitignore` already excludes `/tpu/colab-env-patch.ps1`; keep it that way.
+  `.gitignore` already excludes `/tpu/colab-auth-timeout-patch.ps1`; keep it that way.
 - Never paste a secret into a kernel, notebook, log, or chat quote.
 - The hub `G:\Dx\.gitignore` is deny-everything: a new file needs
   its allow-list line in the same commit.

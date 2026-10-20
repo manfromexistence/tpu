@@ -677,7 +677,7 @@ def run_batch(B, state_dt):
         "sample": sample,
         "claim": "[exec] measured on Colab TPU v5e-1",
     }
-    path = f"{OUTDIR}/receipt-14-b{B}-{tag}-tc{TC}.json"
+    path = f"{OUTDIR}/receipt-b{B}-{tag}-tc{TC}.json"
     json.dump(rec, open(path, "w"), indent=2)
     print("receipt ->", path)
     del S, C, K, V, S_t, C_t, K_t, V_t, x, xg, lg, cur

@@ -103,7 +103,7 @@ grid=(TOUT, 1, BPC)
 
 ### 4.2 A global `jax.config` side effect from importing notebook 04
 
-`tpu/04-reference-forward-pass/kernel.py:47` runs
+`tpu/reference-forward-pass/kernel.py:47` runs
 
 ```python
 jax.config.update("jax_default_matmul_precision", "highest")
@@ -142,7 +142,7 @@ dec.reshape(-1).reshape((IN, OUT), order="F")  # form B  -- what the model uses
 Measured on layer-0 qkv: `maxdiff 1.371e-01`, **46,780,136 of 52,428,800
 entries differ (89%)**. Form B sends destination `(i, j)` to `flat[i + j*IN]`
 of the C-flattened decode; form A sends it to element `i + j*IN` of the
-source traversed in F order. `tpu/04-reference-forward-pass/kernel.py:280-281`
+source traversed in F order. `tpu/reference-forward-pass/kernel.py:280-281`
 (`layer_weights`) uses form B via `flat[o:o+n].reshape(dims, order="F")`.
 
 Comparing the fused kernel against form A produced a `rel ~ 2` disagreement
