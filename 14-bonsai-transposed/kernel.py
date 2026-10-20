@@ -461,12 +461,16 @@ def attn_core(h, T, SW, K, V, pos, B=None):
         # tiles are read once instead of being expanded to 24 heads first.
         G = H // HKV
         qr = q.reshape(B, HKV, G, HD)
-        scores = jnp.einsum("bkgd,bthd->bkgt", qr, K).reshape(B, H, K.shape[1]) \
+        # 'h' is the kv head in BOTH operands: K and V are (B, T, HKV, HD),
+        # and the query's kv head is the middle axis of (B, HKV, G, HD). The
+        # query head index is h*G + g, which is the order the expanded
+        # _KIDX path uses, so the two are equivalent.
+        scores = jnp.einsum("bhgd,bthd->bhgt", qr, K).reshape(B, H, K.shape[1]) \
             * _ISS
         allow = jnp.arange(K.shape[1]) <= pos
         scores = jnp.where(allow[None, None, :], scores, -1e30)
         p = jax.nn.softmax(scores, -1).reshape(B, HKV, G, K.shape[1])
-        o = jnp.einsum("bkgt,bthd->bkgd", p, V).reshape(B, H, HD)
+        o = jnp.einsum("bhgt,bthd->bhgd", p, V).reshape(B, H, HD)
     else:
         scores = jnp.einsum("bhd,bthd->bht", q, K[:, :, _KIDX, :]) * _ISS
         allow = jnp.arange(K.shape[1]) <= pos
