@@ -8,6 +8,13 @@ per token? Two outcomes, both informative:
   2. It runs -- then the two numbers that matter are `draft acceptance rate` and tok/s,
      and they are compared against the 25.5 tok/s measured without a draft.
 
+Updated 2026-10-20: the target file has **no MTP head** (measured from the GGUF
+header itself: 851 tensors, none named nextn/mtp, no `qwen35.nextn_block_count`), so the
+MTP route that produced 50.44 tok/s on the reference checkpoint cannot be used on this
+file. What this kernel now measures instead, all at **-c 8192** and all in one session:
+the no-speculation baseline, the separate-draft-model path, and the n-gram family
+(`ngram-mod`, `ngram-simple`, `ngram-cache`), which needs no second model at all.
+
 The draft is downloaded from HuggingFace rather than staged as a dataset: 537 MB, and
 Kaggle's network is 1-2 GB/s, so it costs roughly 10 seconds. A dataset mount would add
 a permanent artefact for no saving.
@@ -202,42 +209,89 @@ if not draft_flags:
         "attach no draft and report the baseline. Available --spec-draft-* flags: "
         f"{sorted(f for f in have if f.startswith('--spec-draft'))}")
 
-cmd = [str(CLI), "-m", str(LOCAL_MODEL), "-ngl", "99", "-c", "2048",
-       "-n", "64", "--temp", "0", "-p", "Hello, Who are you?",
-       "--single-turn", "--reasoning-budget", "0",
-       "--reasoning-format", "none",
-       draft_flags[0], str(DRAFT)]
-if "--spec-draft-ngl" in have:
-    cmd += ["--spec-draft-ngl", "99"]
-if "--spec-type" in have:
-    # The fork renamed the generic draft type: `--spec-type draft` is rejected with
-    # "unknown speculative type: draft". The accepted set, printed by the binary
-    # itself on that failure, is:
-    #   none,draft-simple,draft-eagle3,draft-mtp,draft-dflash,draft-dspark,
-    #   ngram-simple,ngram-map-k,ngram-map-k4v,ngram-mod,ngram-cache
-    # draft-simple is the plain separate-draft-model path this experiment needs.
-    cmd += ["--spec-type", "draft-simple"]
-if "--spec-draft-n-max" in have:
-    cmd += ["--spec-draft-n-max", "4"]
-
-say("\nrunning:")
-say(" ".join(cmd))
+# --- 5. runs: baseline, draft model, n-gram ------------------------------------
+# The target file has NO MTP head (measured 2026-10-20 from the GGUF header
+# itself: 851 tensors, 0 named nextn/mtp, no qwen35.nextn_block_count), so
+# `--spec-type draft-mtp` cannot work on it. What remains in this build is the
+# separate-draft-model path and the n-gram family, which needs no second model.
+CTX = 8192
+NTOK = 128
+PROMPT = "Hello, Who are you?"
 env = dict(os.environ, CUDA_VISIBLE_DEVICES="0")
-t0 = time.time()
-p = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
-                   check=False, env=env)
-elapsed = time.time() - t0
-log.write((p.stdout or "")[-20000:] + "\n")
-log.write((p.stderr or "")[-20000:] + "\n")
-say((p.stdout or "")[-3000:])
-say((p.stderr or "")[-1500:])
 
-# --- 5. verdict ---------------------------------------------------------------
-out = (p.stdout or "") + (p.stderr or "")
-accept = re.search(r"draft acceptance rate = ([\d.]+)\s*\(\s*(\d+)\s*accepted\s*/\s*(\d+)\s*generated\)", out)
-tok = re.search(r"Generation:\s*([\d.]+)\s*t/s", out)
-pp = re.search(r"Prompt:\s*([\d.]+)\s*t/s", out)
-refuse = re.search(r"vocab.*must match|vocab_type|token \d+ content differs", out, re.I)
+BASE = [str(CLI), "-m", str(LOCAL_MODEL), "-ngl", "99", "-c", str(CTX),
+        "-n", str(NTOK), "--temp", "0", "-p", PROMPT,
+        "--single-turn", "--reasoning-budget", "0",
+        "--reasoning-format", "none"]
+
+
+def parse(out):
+    accept = re.search(r"draft acceptance rate = ([\d.]+)\s*\(\s*(\d+)\s*accepted\s*/\s*(\d+)\s*generated", out)
+    tok = re.search(r"Generation:\s*([\d.]+)\s*t/s", out)
+    pp = re.search(r"Prompt:\s*([\d.]+)\s*t/s", out)
+    refuse = re.search(r"vocab.*must match|vocab_type|token \d+ content differs", out, re.I)
+    return {
+        "acceptance": float(accept.group(1)) if accept else None,
+        "accepted": int(accept.group(2)) if accept else None,
+        "generated": int(accept.group(3)) if accept else None,
+        "gen_tok_s": float(tok.group(1)) if tok else None,
+        "prompt_tok_s": float(pp.group(1)) if pp else None,
+        "refused": bool(refuse),
+        "refuse_message": refuse.group(0) if refuse else None,
+    }
+
+
+def run_stage(label, extra):
+    say(f"=== stage: {label} ===")
+    cmd = BASE + extra
+    say(" ".join(cmd))
+    t0 = time.time()
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=2400,
+                       check=False, env=env)
+    elapsed = time.time() - t0
+    out = (p.stdout or "") + (p.stderr or "")
+    log.write(out[-20000:] + "\n")
+    say(out[-2500:])
+    return parse(out), elapsed, p.returncode
+
+
+results = {}
+
+base, base_t, base_rc = run_stage("baseline (no speculation)", [])
+results["baseline"] = dict(spec=None, **base, wall_seconds=round(base_t, 1),
+                           exit_code=base_rc)
+
+if draft_flags:
+    extra = [draft_flags[0], str(DRAFT)]
+    if "--spec-draft-ngl" in have:
+        extra += ["--spec-draft-ngl", "99"]
+    if "--spec-type" in have:
+        # The fork renamed the generic draft type: `--spec-type draft` is rejected
+        # with "unknown speculative type: draft". The accepted set, printed by the
+        # binary itself on that failure, is:
+        #   none,draft-simple,draft-eagle3,draft-mtp,draft-dflash,draft-dspark,
+        #   ngram-simple,ngram-map-k,ngram-map-k4v,ngram-mod,ngram-cache
+        # draft-simple is the plain separate-draft-model path this experiment needs.
+        extra += ["--spec-type", "draft-simple"]
+    if "--spec-draft-n-max" in have:
+        extra += ["--spec-draft-n-max", "4"]
+    d, d_t, d_rc = run_stage("draft model (Qwen3.5-0.8B Q4_0)", extra)
+    results["draft_model"] = dict(spec="draft-simple", draft=DRAFT.name, **d,
+                                   wall_seconds=round(d_t, 1), exit_code=d_rc)
+
+for nt in ("ngram-mod", "ngram-simple", "ngram-cache"):
+    if "--spec-type" not in have:
+        break
+    n, n_t, n_rc = run_stage(f"n-gram speculation ({nt})", ["--spec-type", nt])
+    results[f"ngram_{nt}"] = dict(spec=nt, **n, wall_seconds=round(n_t, 1),
+                                  exit_code=n_rc)
+    if n["gen_tok_s"]:
+        break
+
+base_tps = results["baseline"].get("gen_tok_s")
+for k, v in results.items():
+    if v.get("gen_tok_s") and base_tps:
+        v["speedup_vs_measured_baseline"] = round(v["gen_tok_s"] / base_tps, 2)
 
 receipt = {
     "platform": "kaggle",
@@ -247,18 +301,15 @@ receipt = {
     "draft": DRAFT.name,
     "draft_bytes": size,
     "draft_quant": "Q4_0",
-    "vocab_check_refused": bool(refuse),
-    "refuse_message": refuse.group(0) if refuse else None,
-    "draft_acceptance": float(accept.group(1)) if accept else None,
-    "accepted_tokens": int(accept.group(2)) if accept else None,
-    "generated_tokens": int(accept.group(3)) if accept else None,
-    "generation_tok_s": float(tok.group(1)) if tok else None,
-    "prompt_tok_s": float(pp.group(1)) if pp else None,
-    "baseline_tok_s_no_draft": 25.5,
-    "speedup_vs_baseline": (round(float(tok.group(1)) / 25.5, 2)
-                            if tok else None),
-    "exit_code": p.returncode,
-    "wall_seconds": round(elapsed, 1),
+    "context_tokens": CTX,
+    "generated_requested": NTOK,
+    "prompt": PROMPT,
+    "stages": results,
+    "best_tok_s": max([v["gen_tok_s"] for v in results.values()
+                       if v.get("gen_tok_s")] or [None]),
+    "target_has_mtp_head": False,
+    "target_mtp_evidence": "GGUF header: 851 tensors, 0 named nextn/mtp, no qwen35.nextn_block_count (measured 2026-10-20)",
+    "reference_not_measured_here": "pich, RTX PRO 4000 24GB, Qwen3.8-27B GGUF: 50.44 tok/s @ 48.3% acceptance (MTP head, which this file does not have)",
     "tier": "exec",
     "measured_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
 }

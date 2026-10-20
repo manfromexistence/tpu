@@ -172,13 +172,16 @@ def _kernel(x_ref, rep_ref, sc_ref, z_ref, acc_ref, *, nsteps):
         z_ref[...] = acc_ref[...].astype(z_ref.dtype)
 
 
+PREFETCH = int(os.environ.get("PREFETCH", "0"))
+
+
 def _pallas(geom, B):
     IN, OUT, BPC, TOUT = geom
     return pl.pallas_call(
         functools.partial(_kernel, nsteps=max(BPC, 1)),
         out_shape=jax.ShapeDtypeStruct((B, OUT), jnp.bfloat16),
         grid_spec=pltpu.PrefetchScalarGridSpec(
-            num_scalar_prefetch=0,
+            num_scalar_prefetch=PREFETCH,
             in_specs=[
                 pl.BlockSpec((B, QK), lambda m, n, k: (0, k)),
                 pl.BlockSpec((RW, TC), lambda m, n, k: (m * BPC + k, 0)),
@@ -201,6 +204,25 @@ _pallas_cached = functools.lru_cache(maxsize=None)(_pallas) if CACHE else _palla
 
 
 GEOM = {}
+
+# `FUSE=1` merges the projections that share one input into a single kernel
+# launch. All three fusable groups have IN=5120, and the tile layout is
+# block-major in the out-column, so concatenating the member tiles along the
+# row axis IS the combined tile: block (m, k) of the combined projection sits
+# at the same (m*BPC + k)*RW offset, and the scales concatenate the same way.
+# The pallas output block is (B, TC) at column block m, so the combined output
+# is [member a | member b] in that order.
+FUSE = os.environ.get("FUSE", "1") == "1"
+FUSE_GROUPS = {
+    "gdn": (("attn_qkv_gate.weight",
+             ("attn_qkv.weight", "attn_gate.weight")),
+            ("ffn_gate_up.weight",
+             ("ffn_gate.weight", "ffn_up.weight"))),
+    "attn": (("attn_qkv_fused.weight",
+              ("attn_q.weight", "attn_k.weight", "attn_v.weight")),
+             ("ffn_gate_up.weight",
+              ("ffn_gate.weight", "ffn_up.weight"))),
+}
 
 
 def proj(x, tile, name, B=None):
@@ -251,6 +273,26 @@ def build_layer(il):
         if short in GEOM:
             assert GEOM[short] == g, f"{short} geometry differs across layers"
         GEOM[short] = g
+    if FUSE:
+        kind = "gdn" if IS_RECR[il] else "attn"
+        for cname, members in FUSE_GROUPS[kind]:
+            if not all(m in out for m in members):
+                continue
+            ins = {GEOM[m][0] for m in members}
+            bpcs = {GEOM[m][2] for m in members}
+            assert len(ins) == 1 and len(bpcs) == 1, f"{cname} members disagree"
+            rep_c = jnp.concatenate([out[m][0] for m in members], axis=0)
+            sc_c = jnp.concatenate([out[m][1] for m in members], axis=0)
+            out[cname] = (rep_c, sc_c)
+            # The members are dead once the combined tile exists: keeping them
+            # would hold a second copy of ~300 MB per GDN layer and blow the
+            # 15.75 GiB budget. The fused path never reads them.
+            for m in members:
+                out.pop(m, None)
+            IN, BPC = ins.pop(), bpcs.pop()
+            OUT = sum(GEOM[m][1] for m in members)
+            assert OUT % TC == 0, f"{cname} OUT {OUT} not a multiple of TC"
+            GEOM[cname] = (IN, OUT, BPC, OUT // TC)
     return out
 
 
@@ -307,8 +349,13 @@ def gdn_core(h, T, SW, S, hist, B=None):
     S = S.astype(jnp.float32)              # fp16 storage, fp32 recurrence
     x = h
     hf = fold_b(h, ROW)
-    qkv = proj(hf, T["attn_qkv.weight"], "attn_qkv.weight", B)
-    z = proj(hf, T["attn_gate.weight"], "attn_gate.weight", B)
+    if FUSE and "attn_qkv_gate.weight" in T:
+        qg = proj(hf, T["attn_qkv_gate.weight"], "attn_qkv_gate.weight", B)
+        nq = GEOM["attn_qkv.weight"][1]
+        qkv, z = qg[:, :nq], qg[:, nq:]
+    else:
+        qkv = proj(hf, T["attn_qkv.weight"], "attn_qkv.weight", B)
+        z = proj(hf, T["attn_gate.weight"], "attn_gate.weight", B)
     beta = jax.nn.sigmoid(h @ SW["ssm_beta.weight"])
     alpha = h @ SW["ssm_alpha.weight"]
     gate = SW["ssm_a"] * jnp.logaddexp(alpha + SW["ssm_dt.bias"], 0.0)
@@ -342,12 +389,22 @@ def attn_core(h, T, SW, K, V, pos, B=None):
     if B is None:
         B = h.shape[0]
     hf = fold_b(h, ROW)
-    qg = proj(hf, T["attn_q.weight"], "attn_q.weight", B).reshape(B, H, 2, HD)
+    if FUSE and "attn_qkv_fused.weight" in T:
+        qkv = proj(hf, T["attn_qkv_fused.weight"], "attn_qkv_fused.weight", B)
+        nq = GEOM["attn_q.weight"][1]
+        nk = GEOM["attn_k.weight"][1]
+        qg = qkv[:, :nq].reshape(B, H, 2, HD)
+        kk = rms(qkv[:, nq:nq + nk].reshape(B, HKV, HD),
+                 SW["attn_k_norm.weight"], EPS)
+        v = qkv[:, nq + nk:].reshape(B, HKV, HD)
+    else:
+        qg = proj(hf, T["attn_q.weight"], "attn_q.weight", B).reshape(B, H, 2, HD)
+        kk = rms(proj(hf, T["attn_k.weight"], "attn_k.weight", B).reshape(B, HKV, HD),
+                 SW["attn_k_norm.weight"], EPS)
+        v = proj(hf, T["attn_v.weight"], "attn_v.weight", B).reshape(B, HKV, HD)
     q, g = qg[:, :, 0, :], qg[:, :, 1, :]
     q = rms(q, SW["attn_q_norm.weight"], EPS)
-    k = rms(proj(hf, T["attn_k.weight"], "attn_k.weight", B).reshape(B, HKV, HD),
-            SW["attn_k_norm.weight"], EPS)
-    v = proj(hf, T["attn_v.weight"], "attn_v.weight", B).reshape(B, HKV, HD)
+    k = kk
     q, k = rope(q, pos), rope(k, pos)
     K = jax.lax.dynamic_update_slice(K, k[:, None], (0, pos, 0, 0))
     V = jax.lax.dynamic_update_slice(V, v[:, None], (0, pos, 0, 0))
@@ -365,8 +422,13 @@ def ffn_core(h, T, B=None):
     if B is None:
         B = h.shape[0]
     hf = fold_b(h, ROW)
-    g = proj(hf, T["ffn_gate.weight"], "ffn_gate.weight", B)
-    u = proj(hf, T["ffn_up.weight"], "ffn_up.weight", B)
+    if FUSE and "ffn_gate_up.weight" in T:
+        gu = proj(hf, T["ffn_gate_up.weight"], "ffn_gate_up.weight", B)
+        ng = GEOM["ffn_gate.weight"][1]
+        g, u = gu[:, :ng], gu[:, ng:]
+    else:
+        g = proj(hf, T["ffn_gate.weight"], "ffn_gate.weight", B)
+        u = proj(hf, T["ffn_up.weight"], "ffn_up.weight", B)
     return proj(fold_b(jax.nn.silu(g) * u, SIGNS[NFF]), T["ffn_down.weight"],
                 "ffn_down.weight", B)
 
@@ -521,6 +583,9 @@ def run_batch(B, state_dt):
         "max_t": T_,
         "state_dtype": state_dt, "out_tile_tc": TC,
         "cache_pallas_callable": CACHE,
+        "proj_fusion": "on" if FUSE else "off",
+        "num_scalar_prefetch": PREFETCH,
+        "projections_per_step": (4 * NL) if FUSE else (6 * len(GIDX) + 7 * len(AIDX)),
         "weights": "PTQ1_0 consumed as packed bytes, in-kernel unpack",
         "layout": f"transposed ({RW}, rows); lanes = out-columns; x @ w",
         "padding": f"{BLK} real bytes + {RW-BLK} pad in each {RW}-byte row",

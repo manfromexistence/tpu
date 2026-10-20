@@ -18,6 +18,11 @@ outcomes and what each means:
 
 Either way this is a real measurement, and it costs about six minutes because the build
 cache and the model dataset are already mounted.
+
+As of 2026-10-20 the kernel runs at **-c 8192** (the 8k window this track's target
+is written against) and measures the **no-speculation baseline in the same session**
+before the MTP run, so the speedup is same-file, same-card, same-context rather than a
+number quoted from another machine.
 """
 
 import json
@@ -124,49 +129,89 @@ probe = sh(f"{CLI} -m {LOCAL} -ngl 99 -c 512 -n 4 --temp 0 -p 'Hi' "
 head_txt = probe.stdout
 say(head_txt or "(no mtp/nextn line found in the load log)")
 
-# --- run with the MTP head ----------------------------------------------------
-say("=== stage: run --spec-type draft-mtp --spec-draft-n-max 8 ===")
-cmd = (f"{CLI} -m {LOCAL} -ngl 99 -c 2048 -n 128 --temp 0 "
-       f"-p 'Hello, Who are you?' --single-turn "
-       f"--reasoning-budget 0 --reasoning-format none "
-       f"--spec-type draft-mtp --spec-draft-n-max 8")
-say(cmd)
-
+# --- two runs, same context, same session ------------------------------------
+# The baseline is measured HERE, not quoted from another session: the 25.5 tok/s
+# in the reference came from a different kernel, a different card and a
+# different context, and the whole question is what MTP does to THIS file.
+CTX = 8192
+NTOK = 128
+PROMPT = "Hello, Who are you?"
 env = dict(os.environ, CUDA_VISIBLE_DEVICES="0")
-t0 = time.time()
-p = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                   timeout=1800, check=False, env=env)
-elapsed = time.time() - t0
-out = (p.stdout or "") + (p.stderr or "")
-log.write(out[-20000:] + "\n")
-say(out[-3000:])
 
-accept = re.search(r"draft acceptance rate = ([\d.]+)\s*\(\s*(\d+)\s*accepted\s*/\s*(\d+)\s*generated", out)
-tok = re.search(r"Generation:\s*([\d.]+)\s*t/s", out)
-pp = re.search(r"Prompt:\s*([\d.]+)\s*t/s", out)
-no_head = "mtp" in out.lower() and ("does not have" in out.lower()
-                                    or "no mtp" in out.lower()
-                                    or "requires" in out.lower())
+
+def run_stage(label, extra):
+    say(f"=== stage: {label} ===")
+    cmd = (f"{CLI} -m {LOCAL} -ngl 99 -c {CTX} -n {NTOK} --temp 0 "
+           f"-p '{PROMPT}' --single-turn "
+           f"--reasoning-budget 0 --reasoning-format none "
+           f"{extra}").strip()
+    say(cmd)
+    t0 = time.time()
+    p = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                       timeout=2400, check=False, env=env)
+    elapsed = time.time() - t0
+    out = (p.stdout or "") + (p.stderr or "")
+    log.write(out[-20000:] + "\n")
+    say(out[-3000:])
+    return out, elapsed, p.returncode
+
+
+def parse(out):
+    accept = re.search(r"draft acceptance rate = ([\d.]+)\s*\(\s*(\d+)\s*accepted\s*/\s*(\d+)\s*generated", out)
+    tok = re.search(r"Generation:\s*([\d.]+)\s*t/s", out)
+    pp = re.search(r"Prompt:\s*([\d.]+)\s*t/s", out)
+    no_head = "mtp" in out.lower() and ("does not have" in out.lower()
+                                        or "no mtp" in out.lower()
+                                        or "requires" in out.lower())
+    return {
+        "acceptance": float(accept.group(1)) if accept else None,
+        "accepted": int(accept.group(2)) if accept else None,
+        "generated": int(accept.group(3)) if accept else None,
+        "gen_tok_s": float(tok.group(1)) if tok else None,
+        "prompt_tok_s": float(pp.group(1)) if pp else None,
+        "no_head": no_head,
+    }
+
+
+base_out, base_elapsed, base_rc = run_stage("baseline (no speculation)", "")
+base = parse(base_out)
+spec_out, spec_elapsed, spec_rc = run_stage("run --spec-type draft-mtp --spec-draft-n-max 8",
+                                             "--spec-type draft-mtp --spec-draft-n-max 8")
+spec = parse(spec_out)
+
+speedup = (round(spec["gen_tok_s"] / base["gen_tok_s"], 2)
+           if spec["gen_tok_s"] and base["gen_tok_s"] else None)
 
 receipt = {
     "platform": "kaggle",
     "accelerator": "T4 (1x)",
     "model": LOCAL.name,
     "model_bytes": LOCAL.stat().st_size,
-    "spec_type": "draft-mtp",
-    "spec_draft_n_max": 8,
-    "file_has_mtp_head": bool(accept) or (not no_head and bool(tok)),
-    "rejected_no_mtp_head": no_head,
-    "draft_acceptance": float(accept.group(1)) if accept else None,
-    "accepted_tokens": int(accept.group(2)) if accept else None,
-    "generated_tokens": int(accept.group(3)) if accept else None,
-    "generation_tok_s": float(tok.group(1)) if tok else None,
-    "prompt_tok_s": float(pp.group(1)) if pp else None,
-    "baseline_tok_s_no_spec": 25.5,
-    "speedup_vs_baseline": (round(float(tok.group(1)) / 25.5, 2) if tok else None),
-    "reference": "pich, RTX PRO 4000 24GB, Qwen3.8-27B: 50.44 tok/s @ 48.3%",
-    "exit_code": p.returncode,
-    "wall_seconds": round(elapsed, 1),
+    "context_tokens": CTX,
+    "generated_requested": NTOK,
+    "prompt": PROMPT,
+    "baseline": {
+        "spec_type": None,
+        "generation_tok_s": base["gen_tok_s"],
+        "prompt_tok_s": base["prompt_tok_s"],
+        "exit_code": base_rc,
+        "wall_seconds": round(base_elapsed, 1),
+    },
+    "draft_mtp": {
+        "spec_type": "draft-mtp",
+        "spec_draft_n_max": 8,
+        "generation_tok_s": spec["gen_tok_s"],
+        "prompt_tok_s": spec["prompt_tok_s"],
+        "draft_acceptance": spec["acceptance"],
+        "accepted_tokens": spec["accepted"],
+        "generated_tokens": spec["generated"],
+        "exit_code": spec_rc,
+        "wall_seconds": round(spec_elapsed, 1),
+    },
+    "file_has_mtp_head": bool(spec["acceptance"]) or (not spec["no_head"] and bool(spec["gen_tok_s"])),
+    "rejected_no_mtp_head": spec["no_head"],
+    "measured_speedup_vs_same_session_baseline": speedup,
+    "reference_not_measured_here": "pich, RTX PRO 4000 24GB, Qwen3.8-27B GGUF: 50.44 tok/s @ 48.3% acceptance",
     "tier": "exec",
     "measured_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
 }
