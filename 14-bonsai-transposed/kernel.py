@@ -168,10 +168,31 @@ def _kernel(x_ref, rep_ref, sc_ref, z_ref, acc_ref, *, nsteps):
     # (B, QK) @ (QK, TC) -> (B, TC): the orientation the Pallas matmul tutorial
     # uses and the one Mosaic's RHS-on-lanes rule packs for.
     if NOCONCAT:
-        for g in g80 + g40 + gh:
-            wg = (g - 1).astype(jnp.bfloat16) * sc                 # (rows, TC)
+        # The 128 in-dims of a block are split across the groups in the file's
+        # order: 5 x 16 (from qs[:16]), 5 x 8 (from qs[16:]), 4 x 2 (from qh).
+        # Each group's rows ARE in-dims, so it contracts against the matching
+        # slice of x -- 16, 8 and 2 in-dims at a time -- instead of one
+        # concatenated (128, TC) block.
+        xr = x_ref[...]
+        for p in range(5):
+            a = p * 16
+            wg = (g80[p] - 1).astype(jnp.bfloat16) * sc              # (16, TC)
             acc_ref[...] += jax.lax.dot_general(
-                x_ref[...], wg, (((1,), (0,)), ((), ())),
+                xr[:, a:a + 16], wg, (((1,), (0,)), ((), ())),
+                precision=jax.lax.Precision.DEFAULT,
+                preferred_element_type=jnp.float32)
+        for p in range(5):
+            a = 80 + p * 8
+            wg = (g40[p] - 1).astype(jnp.bfloat16) * sc              # (8, TC)
+            acc_ref[...] += jax.lax.dot_general(
+                xr[:, a:a + 8], wg, (((1,), (0,)), ((), ())),
+                precision=jax.lax.Precision.DEFAULT,
+                preferred_element_type=jnp.float32)
+        for p in range(4):
+            a = 120 + p * 2
+            wg = (gh[p] - 1).astype(jnp.bfloat16) * sc               # (2, TC)
+            acc_ref[...] += jax.lax.dot_general(
+                xr[:, a:a + 2], wg, (((1,), (0,)), ((), ())),
                 precision=jax.lax.Precision.DEFAULT,
                 preferred_element_type=jnp.float32)
     else:
