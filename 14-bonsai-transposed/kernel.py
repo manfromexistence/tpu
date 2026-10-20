@@ -427,11 +427,24 @@ def attn_core(h, T, SW, K, V, pos, B=None):
     q, k = rope(q, pos), rope(k, pos)
     K = jax.lax.dynamic_update_slice(K, k[:, None], (0, pos, 0, 0))
     V = jax.lax.dynamic_update_slice(V, v[:, None], (0, pos, 0, 0))
-    scores = jnp.einsum("bhd,bthd->bht", q, K[:, :, _KIDX, :]) * _ISS
-    allow = jnp.arange(K.shape[1]) <= pos
-    scores = jnp.where(allow[None, None, :], scores, -1e30)
-    p = jax.nn.softmax(scores, -1)
-    o = jnp.einsum("bht,bthd->bhd", p, V[:, :, _KIDX, :])
+    if GQA:
+        # (B, HKV, G, HD) x (B, T, HKV, HD) -> (B, HKV, G, T): the 6 query
+        # heads that share a kv head contract against it directly, so the KV
+        # tiles are read once instead of being expanded to 24 heads first.
+        G = H // HKV
+        qr = q.reshape(B, HKV, G, HD)
+        scores = jnp.einsum("bkgd,bthd->bkgt", qr, K).reshape(B, H, K.shape[1]) \
+            * _ISS
+        allow = jnp.arange(K.shape[1]) <= pos
+        scores = jnp.where(allow[None, None, :], scores, -1e30)
+        p = jnp.nn.softmax(scores, -1).reshape(B, HKV, G, K.shape[1])
+        o = jnp.einsum("bkgt,bthd->bkgd", p, V).reshape(B, H, HD)
+    else:
+        scores = jnp.einsum("bhd,bthd->bht", q, K[:, :, _KIDX, :]) * _ISS
+        allow = jnp.arange(K.shape[1]) <= pos
+        scores = jnp.where(allow[None, None, :], scores, -1e30)
+        p = jnp.nn.softmax(scores, -1)
+        o = jnp.einsum("bht,bthd->bhd", p, V[:, :, _KIDX, :])
     o = o * jax.nn.sigmoid(g)
     return proj(fold_b(o.reshape(B, -1), SIGNS[H * HD]), T["attn_output.weight"],
                 "attn_output.weight", B), K, V
@@ -605,6 +618,7 @@ def run_batch(B, state_dt):
         "proj_fusion": "on" if FUSE else "off",
         "num_scalar_prefetch": PREFETCH,
         "no_concat": "on" if NOCONCAT else "off",
+        "gqa_attention": "on" if GQA else "off",
         "projections_per_step": (4 * NL) if FUSE else (6 * len(GIDX) + 7 * len(AIDX)),
         "weights": "PTQ1_0 consumed as packed bytes, in-kernel unpack",
         "layout": f"transposed ({RW}, rows); lanes = out-columns; x @ w",
