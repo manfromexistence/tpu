@@ -320,7 +320,8 @@ every arm was numerically exact (first token `271`, identical generated text).
 | the kv head is the same index in both operands of the grouped attention | the first version used `h` for the query group and `h` for the cache and JAX accepted it silently, producing garbage (first token 220, output `" 3 3 3 ..."`); the corrected form uses `h` in both, with the query head index `h*G + g`, the same order as the expanded `_KIDX` path |
 | **do not re-run the "it is the VMEM traffic" theory** | the one experiment that could have tested it says the opposite |
 | **the fused whole-model jit fits only the single-stream regime** | `CompileTimeHbmOom: HLO temporaries (20.08G) exceeds available HBM (15.75G)`, module `jit_full_step`, at batch 80 as well as at a 45k window; the aggregate path (281.01 tok/s) needs the per-layer jit (`FUSE=0`) |
-| the kv-head expansion is **80x larger at batch 80** (201 MB per layer per step at 8k becomes 16 GB per step at batch 80), so the grouped attention matters more there, not less | the 8k batch-1 saving was 25.4 ms; the batch-80 measurement is the open one |
+| the kv-head expansion is **80x larger at batch 80** (201 MB per layer per step at 8k becomes 16 GB per step at batch 80), so the grouped attention matters more there, not less | the 8k batch-1 saving was 25.4 ms; the batch-80 measurement is the open one, and it is blocked by the row below |
+| **the shipped kernel cannot run batch 80 at all** | the whole-model jit needs 20.1 GB of HLO temporaries against 15.75 GiB, and `FUSE=0` does not change that (it governs the projection fusion, not the jit). The 281.01 tok/s aggregate number is the *per-layer-jit* kernel's, preserved in this repository's history at `22e94a1`; see `TODO.md` `TPU-10` |
 
 ## 13. Corrections to claims made on this track
 
@@ -353,4 +354,4 @@ every arm was numerically exact (first token `271`, identical generated text).
 | **do not** spend a session on this lever without a new reason | - |
 
 MIT OR Apache-2.0
-updated: 2026-10-20 23:40 UTC
+updated: 2026-10-20 23:50 UTC
