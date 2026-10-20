@@ -82,7 +82,7 @@ jax.config.update("jax_default_matmul_precision", "highest")
 
 at import time. Fix locally -- reset the config after the exec and pin
 `precision=jax.lax.Precision.DEFAULT` on the `dot_general`. It is a one-line
-fix and it is already written into `10-bonsai-fused/kernel.py`.
+fix and it is already written into `archive/10-bonsai-fused/kernel.py`.
 
 ### `BoundsCheck 2 [deref of opnd#0] for dma.hbm_to_vmem` (then a wedged core)
 
@@ -98,7 +98,7 @@ a wasted session plus a forced restart.
 | Within a block: idx 0-79 = qs bytes 0-15 power-major; 80-119 = qs bytes 16-23 power-major; 120-127 = `qh` **interleaved** per power | `04-bonsai-tpu-forward/kernel.py:90-96` |
 | The model's weight matrix is `decode(...).reshape(-1).reshape(dims, "F")` -- **not** `decode(...).reshape(dims, "F")` | `04-bonsai-tpu-forward/kernel.py:280-281` |
 | Those two forms differ in 89% of entries on layer-0 qkv | `07-pallas-fusion/FINDINGS.md` §4.3 |
-| Tiled reconstruction of the raw blocks == the model's weight matrix, exactly | `10-bonsai-fused/kernel.py` run log, maxdiff 0.0 |
+| Tiled reconstruction of the raw blocks == the model's weight matrix, exactly | `archive/10-bonsai-fused/kernel.py` run log, maxdiff 0.0 |
 | Block (out `o`, in-block `k`) is at flat block index `o*BPC + k` | `07-pallas-fusion/FINDINGS.md` §4.3 |
 
 ## 5. Measured performance (do not re-measure)
@@ -110,7 +110,7 @@ Layer-0 `blk.0.attn_qkv.weight`, 52.4 M params, `[5120, 10240]`:
 | 28-byte GGUF blocks, in-kernel unpack | `(128, 128)` | 4.04-4.18 | yes |
 | host 2-bit repack, 32-byte rows | `(128, 32)` | 30.6-30.7 | yes |
 
-`[exec]` on v5e-1, `10-bonsai-fused/kernel.py`.
+`[exec]` on v5e-1, `archive/10-bonsai-fused/kernel.py`.
 
 - **The cost is flat in batch.** 4.04 ms at B=1, 4.18 ms at B=128.
 - **A host 2-bit repack measured 7.5x slower -- but see §7 before treating that
@@ -126,7 +126,7 @@ layout. See §8.
 
 ## 6. A correction: the "59 tok/s at batch 128" projection was against an impossible layout
 
-`10-bonsai-fused/README.md` projected ~59 tok/s at batch 128 by scaling the
+`archive/10-bonsai-fused/README.md` projected ~59 tok/s at batch 128 by scaling the
 measured 4.18 ms/52.4 M params up to the model's ~27.0 B ternary parameters.
 That arithmetic is right, but it assumed the measured layout -- **128-byte
 rows** -- which used 100 bytes of padding per 28-byte block. Held for the
@@ -159,11 +159,11 @@ libtpu 0.0.50, every one printing the same correctness gate (first token `11`,
 
 | config | tok/s (B=32) | ms/step | receipt |
 | --- | --- | --- | --- |
-| nb 11, `stack(...).reshape` decode, TC 128, int32 | 15.31 | 2090.6 | `11-bonsai-fused-full/receipt-baseline-dec-stack-tc128.json` |
-| nb 12, eight in-blocks per step | 13.30 | 2406 | `12-bonsai-bigdma/receipt-colab-tpu.json` |
-| nb 11, decode spelled `concatenate`, TC 128, int32 | 20.35 | 1572.5 | `11-bonsai-fused-full/receipt-dec-cat-int32-tc128.json` |
+| nb 11, `stack(...).reshape` decode, TC 128, int32 | 15.31 | 2090.6 | `archive/11-bonsai-fused-full/receipt-baseline-dec-stack-tc128.json` |
+| nb 12, eight in-blocks per step | 13.30 | 2406 | `archive/12-bonsai-bigdma/receipt-colab-tpu.json` |
+| nb 11, decode spelled `concatenate`, TC 128, int32 | 20.35 | 1572.5 | `archive/11-bonsai-fused-full/receipt-dec-cat-int32-tc128.json` |
 | nb 11, + out-tile TC 512 | 24.68 | 1297 | log only (`colab_run/11-tc512.log`) |
-| nb 11, + decode at int16 width, TC 512 | **29.66** | **1078.7** | `11-bonsai-fused-full/receipt-dec-cat-int16-tc512.json` |
+| nb 11, + decode at int16 width, TC 512 | **29.66** | **1078.7** | `archive/11-bonsai-fused-full/receipt-dec-cat-int16-tc512.json` |
 
 The last three rows differ from the first by **nothing but how the decode is
 spelled and how wide its lanes are** -- same weights, same tile order, same

@@ -47,16 +47,39 @@ or the web console; do not quote these numbers as current.
 
 ## 2. Directory map
 
+The folder is split three ways, so that what the track still uses is at the top and
+everything else says what it is. **Reorganised 2026-10-20**; nothing was deleted, and
+`git mv` kept every folder's history.
+
+### The live track (at the root of `tpu/`)
+
 | Folder | What it is |
 | --- | --- |
-| `01-tpu-env-probe/` | Draft TPU kernel: JAX devices, Pallas check, FWHT-1024 timing |
-| `02-gguf-prism-metadata/` | Draft TPU kernel: GGUF `prism.hadamard.*` fork reader |
-| `03-fwht-kernel-test/` | Draft kernel: signed-FWHT NumPy reference + tests (CPU passes) |
-| `bonsai2-27b-t4/` | Historical **GPU** kernel, 2xT4, 7.5 tok/s `[exec]` -- **out of scope since 2026-10-20**, kept for the record |
-| `bonsai2-4way/` | Shipped 4-model comparison kernel `[exec]` |
-| `bonsai2-kernel/` … `mtp-test/` | Earlier kernel generations, kept for history. `mtp-test/`, `spec-draft/`, `spec-draft-2gpu/` and `mtp-graft/` are **GPU** kernels: **out of scope since 2026-10-20**, kept for the record |
-| `dq-cli/` | `dq` download/engine CLI source (Rust) |
-| `bin/` | Local build outputs only, never committed |
+| `14-bonsai-transposed/` | **the kernel**: lane-aligned tiles, the fused 64-layer step, the grouped attention, the KV-dtype knob. 281.01 tok/s aggregate, 7.45 tok/s single-stream at an 8k window |
+| `13-cost-sweep/` | the cost model -- where a projection's time goes (the decode is 82 % of it, and it is data movement) |
+| `07-pallas-fusion/` | the Pallas API facts and the nine proof scripts (BlockSpec index maps, the grid rules, the `Bad rhs type` fix) |
+| `04-bonsai-tpu-forward/` | the correctness proof -- the from-scratch 27B forward pass, and the nine bugs it found |
+| `pq2-decode/` | the 2-bit `PQ2_0` format: a verified numpy decode and the port design (the next lever, `TODO.md` TPU-08) |
+| `env/` | the 120 s auth-timeout patch every session needs |
+
+### `archive/` -- the superseded generations, kept as history
+
+`01-tpu-env-probe`, `02-gguf-prism-metadata`, `03-fwht-kernel-test`,
+`05-bonsai-tpu-run`, `06-bonsai-tpu-fast`, `08-bonsai-scan`, `09-bonsai-int8`,
+`10-bonsai-fused`, `11-bonsai-fused-full`, `12-bonsai-bigdma`, and the
+`bonsai2-{kernel,fast,cached,4way,tunnel}` / `tunnel-test` generations. Each still
+carries its own receipt; the ladder they form is the track's history
+(`29.66 -> 281.01 tok/s`).
+
+### `out-of-scope-gpu/` -- GPU kernels, ruled out by AGENTS.md section 2 rule 7
+
+`bonsai2-27b-t4` (2xT4, 7.5 tok/s), `mtp-test`, `spec-draft`, `spec-draft-2gpu`,
+`mtp-graft`. Kept for the record; a GPU run is not a result of this project.
+
+### `tools/` -- not kernels
+
+`dq-cli/` (the `dq` download/engine CLI source, Rust) and `bin/` (local build
+outputs, never committed).
 
 Kaggle datasets used: `essencefromexistence/bonsai2-27b-ptq1`,
 `essencefromexistence/bonsai2-llamacpp-build`. Kaggle account:
@@ -139,8 +162,8 @@ then every FWHT test uses random signs and says so.
   TPU kernel, and the TPU's own bottleneck is the per-weight-byte ternary unpack
   (`DO-NOT-RETEST.md` section 10) -- a GPU number does not move it.
   **The Kaggle GPU kernels under this folder are out of scope since 2026-10-20 and
-  are kept only for the record: `bonsai2-27b-t4/`, `mtp-test/`, `spec-draft/`,
-  `spec-draft-2gpu/`, `mtp-graft/`. Do not run them.**
+  are kept only for the record: `out-of-scope-gpu/bonsai2-27b-t4/`, `out-of-scope-gpu/mtp-test/`, `out-of-scope-gpu/spec-draft/`,
+  `out-of-scope-gpu/spec-draft-2gpu/`, `out-of-scope-gpu/mtp-graft/`. Do not run them.**
 - Never commit `env.ps1`, tokens, cookies, or service-account keys.
   `.gitignore` already excludes `/tpu/env.ps1`; keep it that way.
 - Never paste a secret into a kernel, notebook, log, or chat quote.

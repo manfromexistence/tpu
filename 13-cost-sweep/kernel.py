@@ -2,7 +2,7 @@
 
 **STEP 2 OF A SESSION, NEVER THE WHOLE SESSION.** The standing rule
 (`tpu/README.md` §6, `DO-NOT-RETEST.md` §0) is that every TPU session runs the
-real 64-layer Bonsai 2 model end to end. Run `11-bonsai-fused-full/kernel.py`
+real 64-layer Bonsai 2 model end to end. Run `archive/11-bonsai-fused-full/kernel.py`
 first, then this file, in the same session, with a `colab restart-kernel`
 between the two. This file measures weights. It does not measure the model, and
 a session that ran only this file would be a wasted session.

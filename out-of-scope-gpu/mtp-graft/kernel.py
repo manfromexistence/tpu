@@ -315,7 +315,7 @@ def graft(target_path, head_path, out_path, copy_names, extra_kv,
 # ---------------------------------------------------------------- build cache
 def find_cache():
     for depth in (1, 2, 3, 4):
-        for suffix in ("bin/llama-cli", "llama-cli"):
+        for suffix in ("tools/bin/llama-cli", "llama-cli"):
             hits = list(Path("/kaggle/input").glob("*/" * depth + suffix))
             hits = [h for h in hits if "bonsai2-llamacpp-build" in str(h)]
             if hits:

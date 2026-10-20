@@ -156,10 +156,10 @@ def find_build_cache():
 
     Matched three ways, because the dataset's layout is not what it looks like from the
     CLI: it was created with `-r zip`, which drops the source directory prefix, so the
-    binaries sit at the DATASET ROOT rather than under bin/.
+    binaries sit at the DATASET ROOT rather than under tools/bin/.
     """
     root = Path("/kaggle/input")
-    patterns = ["*/" * d + "bin/llama-server" for d in (1, 2, 3, 4)]
+    patterns = ["*/" * d + "tools/bin/llama-server" for d in (1, 2, 3, 4)]
     patterns += ["*/" * d + "llama-server" for d in (1, 2, 3, 4)]
 
     for pat in patterns:

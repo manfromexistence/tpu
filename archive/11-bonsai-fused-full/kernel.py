@@ -11,7 +11,7 @@ Why this shape:
 - Notebooks 06/08/09 spent 27.5-108 GB/step decoding weights to fp32 in HBM
   and were capped at 3.5-4.0 tok/s by that traffic. The fused kernel removes
   it -- the packed bytes are consumed in place.
-- `10-bonsai-fused` measured the kernel at 4.1 ms/52.4 M params, **flat in
+- `archive/10-bonsai-fused` measured the kernel at 4.1 ms/52.4 M params, **flat in
   batch**, so batching is free and everything rides on the batch size.
 - The measured-fast layout used 128-byte rows and cannot hold the model
   (27.0 GB vs 15.75 GiB). This script uses **28-byte rows, the raw GGUF block

@@ -188,7 +188,7 @@ colab exec -s $S --timeout 900 -f /mnt/g/Dx/tpu/13-cost-sweep/kernel.py
 Step 2 takes about 25 seconds: compile dominates, and the measured kernel time is
 milliseconds. `RECEIPT=/content/receipt-colab-tpu-13.json` by default.
 
-Folding these cells into `11-bonsai-fused-full/kernel.py` so the model and its
+Folding these cells into `archive/11-bonsai-fused-full/kernel.py` so the model and its
 breakdown are one file is the preferred end state. It is not done yet, and this
 README does not claim it is.
 

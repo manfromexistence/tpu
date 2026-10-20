@@ -72,7 +72,7 @@ BUILD_CACHE = "bonsai2-llamacpp-build"
 
 def find_cache():
     for depth in (1, 2, 3, 4):
-        for suffix in ("bin/llama-cli", "llama-cli"):
+        for suffix in ("tools/bin/llama-cli", "llama-cli"):
             hits = [p for p in Path("/kaggle/input").glob("*/" * depth + suffix)
                     if BUILD_CACHE in str(p)]
             if hits:

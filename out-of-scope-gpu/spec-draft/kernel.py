@@ -73,16 +73,16 @@ BUILD_CACHE = "bonsai2-llamacpp-build"
 
 
 def find_cache():
-    """Locate the build cache's bin/llama-cli or root llama-cli under /kaggle/input.
+    """Locate the build cache's tools/bin/llama-cli or root llama-cli under /kaggle/input.
 
     Two layouts are tried because the dataset was uploaded with `-r zip`, which strips
-    the source directory prefix: the binaries land at the dataset ROOT, not under bin/.
+    the source directory prefix: the binaries land at the dataset ROOT, not under tools/bin/.
     The pattern is built as a STRING and passed to glob as a string -- an earlier
     version built a list of patterns and passed the list, which raised TypeError.
     """
     root = Path("/kaggle/input")
     for depth in (1, 2, 3, 4):
-        for suffix in ("bin/llama-cli", "llama-cli"):
+        for suffix in ("tools/bin/llama-cli", "llama-cli"):
             pat = "*/" * depth + suffix
             hits = [p for p in root.glob(pat) if BUILD_CACHE in str(p)]
             if hits:

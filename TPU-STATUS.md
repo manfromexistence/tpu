@@ -36,11 +36,11 @@ to TC 512 (1.21x) and int16 decode width (1.20x) — `DO-NOT-RETEST.md` §7.
 | nb 04 single-stream | 0.27 | first-ever run |
 | nb 06 fixed-KV, batch 16 | 3.5 | |
 | nb 09 int8, batch 8 | 4.0 | |
-| nb 11 fused, batch 32, `stack` decode, TC 128 | 15.31 | `11-bonsai-fused-full/receipt-baseline-dec-stack-tc128.json` |
+| nb 11 fused, batch 32, `stack` decode, TC 128 | 15.31 | `archive/11-bonsai-fused-full/receipt-baseline-dec-stack-tc128.json` |
 | nb 12 windowed DMA, batch 32 | 13.30 | refuted hypothesis, see below |
-| nb 11, `concatenate` decode, TC 128, int32 | 20.35 | `11-bonsai-fused-full/receipt-dec-cat-int32-tc128.json` |
+| nb 11, `concatenate` decode, TC 128, int32 | 20.35 | `archive/11-bonsai-fused-full/receipt-dec-cat-int32-tc128.json` |
 | nb 11, `concatenate` decode, TC 512, int32 | 24.68 | log only (receipt overwritten) |
-| **nb 11, `concatenate` decode, TC 512, int16** | **29.66** | `11-bonsai-fused-full/receipt-dec-cat-int16-tc512.json` |
+| **nb 11, `concatenate` decode, TC 512, int16** | **29.66** | `archive/11-bonsai-fused-full/receipt-dec-cat-int16-tc512.json` |
 | **nb 14 lane-aligned, batch 80, f16 state, TC 1024** | **281.01** | `14-bonsai-transposed/receipt-14-b80-f16-tc1024.json` |
 | nb 14, batch 1, 8k window, per-layer jit | 4.62 | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-franch.json` |
 | **nb 14, batch 1, 8k window, fused 64-layer step** | **5.54** | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-fused.json` |
