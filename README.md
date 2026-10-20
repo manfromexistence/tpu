@@ -29,7 +29,7 @@ measures. See §6.
 Kaggle auth lives outside the hub (never copy it in):
 
 ```powershell
-. 'G:\Ai\.secrets\kaggle\env.ps1'   # sets KAGGLE_USERNAME + KAGGLE_KEY
+. 'G:\Ai\.secrets\kaggle\colab-env-patch.ps1'   # sets KAGGLE_USERNAME + KAGGLE_KEY
 kaggle kernels list --mine --csv
 ```
 
@@ -55,26 +55,26 @@ everything else says what it is. **Reorganised 2026-10-20**; nothing was deleted
 
 | Folder | What it is |
 | --- | --- |
-| `14-bonsai-transposed/` | **the kernel**: lane-aligned tiles, the fused 64-layer step, the grouped attention, the KV-dtype knob. 281.01 tok/s aggregate, 7.45 tok/s single-stream at an 8k window |
-| `13-cost-sweep/` | the cost model -- where a projection's time goes (the decode is 82 % of it, and it is data movement) |
-| `07-pallas-fusion/` | the Pallas API facts and the nine proof scripts (BlockSpec index maps, the grid rules, the `Bad rhs type` fix) |
-| `04-bonsai-tpu-forward/` | the correctness proof -- the from-scratch 27B forward pass, and the nine bugs it found |
-| `pq2-decode/` | the 2-bit `PQ2_0` format: a verified numpy decode and the port design (the next lever, `TODO.md` TPU-08) |
-| `env/` | the 120 s auth-timeout patch every session needs |
+| `14-lane-aligned-ternary-kernel/` | **the kernel**: lane-aligned tiles, the fused 64-layer step, the grouped attention, the KV-dtype knob. 281.01 tok/s aggregate, 7.45 tok/s single-stream at an 8k window |
+| `13-projection-cost-breakdown/` | the cost model -- where a projection's time goes (the decode is 82 % of it, and it is data movement) |
+| `07-pallas-matmul-findings/` | the Pallas API facts and the nine proof scripts (BlockSpec index maps, the grid rules, the `Bad rhs type` fix) |
+| `04-reference-forward-pass/` | the correctness proof -- the from-scratch 27B forward pass, and the nine bugs it found |
+| `pq2-2bit-weight-format/` | the 2-bit `PQ2_0` format: a verified numpy decode and the port design (the next lever, `TODO.md` TPU-08) |
+| `colab-env-patch/` | the 120 s auth-timeout patch every session needs |
 
 ### `archive/` -- the superseded generations, kept as history
 
-`01-tpu-env-probe`, `02-gguf-prism-metadata`, `03-fwht-kernel-test`,
-`05-bonsai-tpu-run`, `06-bonsai-tpu-fast`, `08-bonsai-scan`, `09-bonsai-int8`,
-`10-bonsai-fused`, `11-bonsai-fused-full`, `12-bonsai-bigdma`, and the
-`bonsai2-{kernel,fast,cached,4way,tunnel}` / `tunnel-test` generations. Each still
+`01-environment-and-pallas-probe`, `02-gguf-format-and-sign-metadata`, `03-hadamard-transform-tests`,
+`05-run-harness`, `06-batched-kv-decode`, `08-lax-scan-over-layers`, `09-int8-weights`,
+`10-fused-ternary-matmul`, `11-fully-fused-64-layer-model`, `12-windowed-dma-in-blocks`, and the
+`bonsai2-{kernel,fast,cached,4way,tunnel}` / `tunnel-connectivity-test` generations. Each still
 carries its own receipt; the ladder they form is the track's history
 (`29.66 -> 281.01 tok/s`).
 
 ### `out-of-scope-gpu/` -- GPU kernels, ruled out by AGENTS.md section 2 rule 7
 
-`bonsai2-27b-t4` (2xT4, 7.5 tok/s), `mtp-test`, `spec-draft`, `spec-draft-2gpu`,
-`mtp-graft`. Kept for the record; a GPU run is not a result of this project.
+`gpu-llamacpp-t4-baseline` (2xT4, 7.5 tok/s), `gpu-mtp-head-availability-test`, `gpu-draft-model-speculation-test`, `gpu-draft-model-two-t4-test`,
+`gpu-mtp-head-graft-test`. Kept for the record; a GPU run is not a result of this project.
 
 ### `tools/` -- not kernels
 
@@ -162,10 +162,10 @@ then every FWHT test uses random signs and says so.
   TPU kernel, and the TPU's own bottleneck is the per-weight-byte ternary unpack
   (`DO-NOT-RETEST.md` section 10) -- a GPU number does not move it.
   **The Kaggle GPU kernels under this folder are out of scope since 2026-10-20 and
-  are kept only for the record: `out-of-scope-gpu/bonsai2-27b-t4/`, `out-of-scope-gpu/mtp-test/`, `out-of-scope-gpu/spec-draft/`,
-  `out-of-scope-gpu/spec-draft-2gpu/`, `out-of-scope-gpu/mtp-graft/`. Do not run them.**
-- Never commit `env.ps1`, tokens, cookies, or service-account keys.
-  `.gitignore` already excludes `/tpu/env.ps1`; keep it that way.
+  are kept only for the record: `out-of-scope-gpu/gpu-llamacpp-t4-baseline/`, `out-of-scope-gpu/gpu-mtp-head-availability-test/`, `out-of-scope-gpu/gpu-draft-model-speculation-test/`,
+  `out-of-scope-gpu/gpu-draft-model-two-t4-test/`, `out-of-scope-gpu/gpu-mtp-head-graft-test/`. Do not run them.**
+- Never commit `colab-env-patch.ps1`, tokens, cookies, or service-account keys.
+  `.gitignore` already excludes `/tpu/colab-env-patch.ps1`; keep it that way.
 - Never paste a secret into a kernel, notebook, log, or chat quote.
 - The hub `G:\Dx\.gitignore` is deny-everything: a new file needs
   its allow-list line in the same commit.

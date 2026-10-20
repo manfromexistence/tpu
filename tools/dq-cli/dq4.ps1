@@ -36,7 +36,7 @@ $DEFAULT_POOL = @(
 )
 
 $pool = if ($Pool) { $Pool -split ',' | ForEach-Object { $_.Trim() } } else { $DEFAULT_POOL }
-$cursorFile = Join-Path $env:TEMP 'dq4.cursor'
+$cursorFile = Join-Path $colab-env-patch:TEMP 'dq4.cursor'
 $cursor = 0
 if (Test-Path -LiteralPath $cursorFile) { [int]$cursor = Get-Content -LiteralPath $cursorFile }
 
@@ -111,7 +111,7 @@ while ($true) {
         Set-Content -LiteralPath $cursorFile -Value $script:cursor
         Write-Host "[dq4 -> $url]" -ForegroundColor DarkGray
         try {
-            $env:DQ_URL = $url
+            $colab-env-patch:DQ_URL = $url
             $script = 'G:\Dx\tpu\bin\dq.ps1'
             & $script $payload
             $ok = $true

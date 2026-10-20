@@ -3,7 +3,7 @@
     dqstart - push the Bonsai 2 4-way Kaggle notebook and report the four live URLs.
 
 .DESCRIPTION
-    One command that takes the local kernel at G:\Dx\tpu\bonsai2-4way, pushes it to
+    One command that takes the local kernel at G:\Dx\tpu\llamacpp-four-model-comparison, pushes it to
     Kaggle (creating a new version and run), polls until it finishes, extracts the four
     cloudflared URLs, writes them into dq's config, and prints them.
 
@@ -25,7 +25,7 @@
     dqprobe                       # read the saved URLs and check each /health
 #>
 param(
-    [string]$KernelPath = 'G:\Dx\tpu\bonsai2-4way',
+    [string]$KernelPath = 'G:\Dx\tpu\llamacpp-four-model-comparison',
     [switch]$Wait
 )
 
@@ -40,14 +40,14 @@ $DQ = 'G:\Dx\tpu\bin'
 function Get-Token {
     # The token lives in the kaggle secrets file; sourcing it keeps it out of this
     # script and out of git.
-    $envFile = 'G:\Ai\.secrets\kaggle\env.ps1'
+    $envFile = 'G:\Ai\.secrets\kaggle\colab-env-patch.ps1'
     if (Test-Path -LiteralPath $envFile) {
         . $envFile
     }
-    if (-not $env:KAGGLE_API_TOKEN) {
-        throw 'KAGGLE_API_TOKEN is not set and no env.ps1 was found to source.'
+    if (-not $colab-env-patch:KAGGLE_API_TOKEN) {
+        throw 'KAGGLE_API_TOKEN is not set and no colab-env-patch.ps1 was found to source.'
     }
-    return $env:KAGGLE_API_TOKEN
+    return $colab-env-patch:KAGGLE_API_TOKEN
 }
 
 function Invoke-Kaggle {

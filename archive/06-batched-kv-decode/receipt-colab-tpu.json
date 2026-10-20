@@ -1,0 +1,16 @@
+{
+  "notebook": "06-batched-kv-decode",
+  "backend": "tpu",
+  "jax": "0.7.2",
+  "batch": 16,
+  "max_t": 256,
+  "prompt": "Hello",
+  "tokens_generated": 128,
+  "tokens_possible": 128,
+  "decode_seconds": 36.57,
+  "aggregate_tok_per_s": 3.5,
+  "per_sequence_ms_per_token": 4571.3,
+  "baseline_notebook04_tok_per_s": 0.27,
+  "correctness_gate_pass": true,
+  "claim": "[exec] measured on Colab TPU v5e-1; batch replicates one prompt"
+}

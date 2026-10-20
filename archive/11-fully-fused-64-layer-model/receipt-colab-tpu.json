@@ -1,0 +1,16 @@
+{
+  "notebook": "11-fully-fused-64-layer-model",
+  "backend": "tpu",
+  "jax": "0.11.2",
+  "batch": 32,
+  "n_gen": 32,
+  "prompt": "Hello",
+  "weights": "PTQ1_0 consumed as packed bytes, in-kernel unpack",
+  "layout": "28-byte rows (raw GGUF block layout)",
+  "decode_seconds": 66.909,
+  "aggregate_tok_per_s": 15.3,
+  "ms_per_step": 2090.9,
+  "first_token": 314,
+  "note": "CORRECTION 2026-10-18: this field was captured after generation, so 314 is the LAST token, not the first. The gate line printed 'first token 11 ',''. Notebook 12 fixed the capture and its receipt reports first_token 11.",
+  "claim": "[exec] measured on Colab TPU v5e-1"
+}

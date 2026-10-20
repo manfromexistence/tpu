@@ -1,0 +1,18 @@
+{
+  "notebook": "09-int8-weights",
+  "backend": "tpu",
+  "jax": "0.7.2",
+  "batch": 8,
+  "max_t": 256,
+  "prompt": "Hello",
+  "tokens_generated": 64,
+  "tokens_possible": 64,
+  "decode_seconds": 15.999,
+  "aggregate_tok_per_s": 4.0,
+  "per_sequence_ms_per_token": 1999.9,
+  "baseline_notebook04_tok_per_s": 0.27,
+  "notebook06_tok_per_s": 3.5,
+  "notebook08_tok_per_s": 1.5,
+  "correctness_gate_pass": true,
+  "claim": "[exec] measured on Colab TPU v5e-1; batch replicates one prompt"
+}

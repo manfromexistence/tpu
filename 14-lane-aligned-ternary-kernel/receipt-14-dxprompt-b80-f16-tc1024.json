@@ -1,0 +1,23 @@
+{
+  "notebook": "14-lane-aligned-ternary-kernel",
+  "backend": "tpu",
+  "jax": "0.11.2",
+  "batch": 80,
+  "n_gen": 44,
+  "prompt": "System prompt - You are dx, made by essencefromexistence - he is your best friend and creator. Now what is your name and what is the capital of french, us, india and bangladesh??",
+  "prompt_tokens": 41,
+  "max_t": 96,
+  "state_dtype": "float16",
+  "out_tile_tc": 1024,
+  "cache_pallas_callable": true,
+  "weights": "PTQ1_0 consumed as packed bytes, in-kernel unpack",
+  "layout": "transposed (32, rows); lanes = out-columns; x @ w",
+  "padding": "28 real bytes + 4 pad in each 32-byte row",
+  "decode": "concatenate along axis 0 (in-dims on sublanes), int16 lanes",
+  "decode_seconds": 13.125,
+  "aggregate_tok_per_s": 268.19,
+  "ms_per_step": 298.3,
+  "first_token": 271,
+  "sample": "\n\n<think>\nThe user is asking me to roleplay as \"dx\" made by \"essencefromexistence\" who is my \"best friend and creator.\" They're asking me to state my name and answer geography questions",
+  "claim": "[exec] measured on Colab TPU v5e-1"
+}

@@ -1,0 +1,16 @@
+{
+  "notebook": "11-fully-fused-64-layer-model",
+  "backend": "tpu",
+  "jax": "0.11.2",
+  "batch": 32,
+  "n_gen": 32,
+  "prompt": "Hello",
+  "weights": "PTQ1_0 consumed as packed bytes, in-kernel unpack",
+  "layout": "28-byte rows (raw GGUF block layout)",
+  "decode_seconds": 66.898,
+  "aggregate_tok_per_s": 15.31,
+  "ms_per_step": 2090.6,
+  "first_token": 314,
+  "claim": "[exec] measured on Colab TPU v5e-1",
+  "note": "Config for this run: out-tile TC=128, decode via `jnp.stack(...).reshape` (the original notebook 11 spelling). This is the 15.31 tok/s baseline that the rest of this folder is measured against. CORRECTION 2026-10-18: `first_token` was captured after the generation loop in the version of notebook 11 that produced this file, so 314 is the LAST token of the 32-step run, not the first. The gate line printed `first token 11 ','`, and the 48-token sample matches the baseline run character for character. Notebook 11 now captures the first token before the loop; the numbers above are otherwise unedited."
+}

@@ -5,7 +5,7 @@
 **Two numbers, two different quantities.** Aggregate: **281.01 tok/s, batch 80,
 284.7 ms/step**. Single stream: **5.54 tok/s, 180.6 ms/step** at an 8k context
 window, measured 2026-10-19 with the 64-layer step fused into one jitted
-program (`14-bonsai-transposed/receipt-14-b1-f16-tc1024-fused.json`). The
+program (`14-lane-aligned-ternary-kernel/receipt-14-b1-f16-tc1024-fused.json`). The
 aggregate is 80 conversations advancing in lockstep; the single-stream figure is
 one conversation. They are not alternatives and must not be quoted as if they
 were.
@@ -25,7 +25,7 @@ The decoded weights are bit-identical (proven without a TPU); the price is
 is 245.6 ms at B=32 and 284.7 ms at B=80, so aggregate throughput scales nearly
 linearly with batch until the 15.75 GiB HBM wall (peak measured 15.67 GiB).
 Mechanism, ablations and the cache refutation:
-`14-bonsai-transposed/README.md`, `DO-NOT-RETEST.md` §8. The previous best,
+`14-lane-aligned-ternary-kernel/README.md`, `DO-NOT-RETEST.md` §8. The previous best,
 kept for the ablation history: 29.66 tok/s was 1.94x the 15.31 tok/s the same
 notebook 11 measured earlier in that session, from spelling the decode with
 `concatenate` instead of `stack(axis=1).reshape` (1.33x), raising the out-tile
@@ -36,18 +36,18 @@ to TC 512 (1.21x) and int16 decode width (1.20x) — `DO-NOT-RETEST.md` §7.
 | nb 04 single-stream | 0.27 | first-ever run |
 | nb 06 fixed-KV, batch 16 | 3.5 | |
 | nb 09 int8, batch 8 | 4.0 | |
-| nb 11 fused, batch 32, `stack` decode, TC 128 | 15.31 | `archive/11-bonsai-fused-full/receipt-baseline-dec-stack-tc128.json` |
+| nb 11 fused, batch 32, `stack` decode, TC 128 | 15.31 | `archive/11-fully-fused-64-layer-model/receipt-baseline-dec-stack-tc128.json` |
 | nb 12 windowed DMA, batch 32 | 13.30 | refuted hypothesis, see below |
-| nb 11, `concatenate` decode, TC 128, int32 | 20.35 | `archive/11-bonsai-fused-full/receipt-dec-cat-int32-tc128.json` |
+| nb 11, `concatenate` decode, TC 128, int32 | 20.35 | `archive/11-fully-fused-64-layer-model/receipt-dec-cat-int32-tc128.json` |
 | nb 11, `concatenate` decode, TC 512, int32 | 24.68 | log only (receipt overwritten) |
-| **nb 11, `concatenate` decode, TC 512, int16** | **29.66** | `archive/11-bonsai-fused-full/receipt-dec-cat-int16-tc512.json` |
-| **nb 14 lane-aligned, batch 80, f16 state, TC 1024** | **281.01** | `14-bonsai-transposed/receipt-14-b80-f16-tc1024.json` |
-| nb 14, batch 1, 8k window, per-layer jit | 4.62 | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-franch.json` |
-| **nb 14, batch 1, 8k window, fused 64-layer step** | **5.54** | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-fused.json` |
-| nb 14, batch 1, 45k window, fp32 KV | 2.86 | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-45056.json` |
-| nb 14, batch 80, f16 state, TC 512 | 266.37 | `14-bonsai-transposed/receipt-14-b80-f16-tc512.json` |
-| nb 14, batch 32, f16 state, TC 512 | 134.67 | `14-bonsai-transposed/receipt-14-b32-f16-tc512.json` |
-| nb 14, batch 32, f32 state, TC 512 (lane flip alone) | 130.30 | `14-bonsai-transposed/receipt-14-b32-f32-tc512.json` |
+| **nb 11, `concatenate` decode, TC 512, int16** | **29.66** | `archive/11-fully-fused-64-layer-model/receipt-dec-cat-int16-tc512.json` |
+| **nb 14 lane-aligned, batch 80, f16 state, TC 1024** | **281.01** | `14-lane-aligned-ternary-kernel/receipt-14-b80-f16-tc1024.json` |
+| nb 14, batch 1, 8k window, per-layer jit | 4.62 | `14-lane-aligned-ternary-kernel/receipt-14-b1-f16-tc1024-franch.json` |
+| **nb 14, batch 1, 8k window, fused 64-layer step** | **5.54** | `14-lane-aligned-ternary-kernel/receipt-14-b1-f16-tc1024-fused.json` |
+| nb 14, batch 1, 45k window, fp32 KV | 2.86 | `14-lane-aligned-ternary-kernel/receipt-14-b1-f16-tc1024-45056.json` |
+| nb 14, batch 80, f16 state, TC 512 | 266.37 | `14-lane-aligned-ternary-kernel/receipt-14-b80-f16-tc512.json` |
+| nb 14, batch 32, f16 state, TC 512 | 134.67 | `14-lane-aligned-ternary-kernel/receipt-14-b32-f16-tc512.json` |
+| nb 14, batch 32, f32 state, TC 512 (lane flip alone) | 130.30 | `14-lane-aligned-ternary-kernel/receipt-14-b32-f32-tc512.json` |
 
 ## The 50 tok/s target is a TPU target (2026-10-20)
 
@@ -57,9 +57,9 @@ kernel** at 50 tok/s for one stream on an 8k window, and the state of it is:
 
 | fact | value | receipt |
 | --- | --- | --- |
-| one stream, 8k window, the 64-layer step fused into one jit | **5.52 tok/s** (181.3 ms/step) | `14-bonsai-transposed/receipt-14-fuse1-b1-f16-tc1024.json` |
-| 80 streams, 64-token window | 284.7 ms/step (281.01 tok/s aggregate) | `14-bonsai-transposed/receipt-14-b80-f16-tc1024.json` |
-| weight-traffic floor on this slice | 6.37 GiB / 709 GB/s = **9.0 ms** | `13-cost-sweep/README.md:28` |
+| one stream, 8k window, the 64-layer step fused into one jit | **5.52 tok/s** (181.3 ms/step) | `14-lane-aligned-ternary-kernel/receipt-14-fuse1-b1-f16-tc1024.json` |
+| 80 streams, 64-token window | 284.7 ms/step (281.01 tok/s aggregate) | `14-lane-aligned-ternary-kernel/receipt-14-b80-f16-tc1024.json` |
+| weight-traffic floor on this slice | 6.37 GiB / 709 GB/s = **9.0 ms** | `13-projection-cost-breakdown/README.md:28` |
 | the step is ~20x off that floor, and the unpack is 82 % of a projection | — | `DO-NOT-RETEST.md` section 10 |
 | kernel launches are **not** the cost: 36 % fewer launches moved the step 0.5 % | — | `DO-NOT-RETEST.md` section 10 |
 
@@ -204,7 +204,7 @@ Fixed-size KV + vmap batching + per-layer jit. Measured:
 - batch-16: 128 tokens / 36.57s = 3.5 tok/s aggregate
 - baseline notebook 04: 0.27 tok/s single-stream (13x speedup at B=16)
 - correctness gate passes; generated text matches notebook 04 exactly
-- receipt: tpu/06-bonsai-tpu-fast/receipt-colab-tpu.json
+- receipt: tpu/06-batched-kv-decode/receipt-colab-tpu.json
 
 Per-sequence latency floor is 3-4.5s (XLA launch overhead, ~300 dispatches
 per step), not bandwidth or recompile. 100 tok/s aggregate would need
@@ -220,7 +220,7 @@ is kept as the notebook-06 state of knowledge.
 The clause "Pallas, broken on this stack" above is **withdrawn**. The fused
 ternary kernel compiles, runs and is numerically correct on real weights.
 Its cost was two bugs in the test harness, documented in
-`tpu/07-pallas-fusion/FINDINGS.md` §4:
+`tpu/07-pallas-matmul-findings/FINDINGS.md` §4:
 
 - `pl.BlockSpec` index maps return **block** indices, not element offsets;
   passing offsets walked 128x outside the array and halted the core with
@@ -231,10 +231,10 @@ Its cost was two bugs in the test harness, documented in
 
 A third trap cost the numeric debugging: `dec.reshape((IN, OUT), order="F")`
 is not `dec.reshape(-1).reshape((IN, OUT), order="F")` -- they disagree in
-89% of entries on layer-0 qkv, and `04-bonsai-tpu-forward/kernel.py:280-281`
+89% of entries on layer-0 qkv, and `04-reference-forward-pass/kernel.py:280-281`
 uses the second form.
 
-Validated (`tpu/10-bonsai-fused/kernel.py`), layer 0 `blk.0.attn_qkv.weight`
+Validated (`tpu/10-fused-ternary-matmul/kernel.py`), layer 0 `blk.0.attn_qkv.weight`
 (IN 5120, OUT 10240, 52.4 M params):
 
 | Check | Result |
@@ -298,7 +298,7 @@ notebook 14 and both paid**:
    15.75 GiB) rather than at a throughput wall.
 2. **`TC = 1024`.** It was worth +5.5 % at batch 80 (266.37 -> 281.01), not
    the 2-3 % the isolated notebook 13 cells suggested; both numbers are
-   receipts in `14-bonsai-transposed/`.
+   receipts in `14-lane-aligned-ternary-kernel/`.
 
 MIT OR Apache-2.0
 updated: 2026-10-20 20:45 UTC

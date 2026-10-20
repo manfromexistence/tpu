@@ -25,7 +25,7 @@
     you> explain hash tables
 
 .EXAMPLE
-    $env:DQ_URL = "https://other.tunnel.example"
+    $colab-env-patch:DQ_URL = "https://other.tunnel.example"
     dq
 
 .NOTES
@@ -60,8 +60,8 @@ if ($Version -or ($Prompt -contains '-v') -or ($Prompt -contains '--version')) {
 }
 
 # --- config -------------------------------------------------------------------
-# Precedence: -Endpoint > $env:DQ_URL > persisted config file > built-in default.
-# The default is a live session's URL, which will go stale; the env var and the file are
+# Precedence: -Endpoint > $colab-env-patch:DQ_URL > persisted config file > built-in default.
+# The default is a live session's URL, which will go stale; the colab-env-patch var and the file are
 # how you point dq at a new session without editing this script.
 $DefaultEndpoint = 'https://synopsis-auditor-builder-potato.trycloudflare.com'
 $DefaultModel    = 'Ternary-Bonsai-2-27B-PTQ1_0'
@@ -93,7 +93,7 @@ function Get-DqConfig {
 
 $Config = Get-DqConfig
 if ($Endpoint)        { $Config.endpoint = $Endpoint }
-elseif ($env:DQ_URL) { $Config.endpoint = $env:DQ_URL }
+elseif ($colab-env-patch:DQ_URL) { $Config.endpoint = $colab-env-patch:DQ_URL }
 
 $Base = $Config.endpoint.TrimEnd('/')
 $Url  = "$Base/v1/chat/completions"

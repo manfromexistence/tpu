@@ -1,0 +1,16 @@
+{
+  "notebook": "03-hadamard-transform-tests",
+  "tests": {
+    "butterfly_vs_sylvester": "PASS",
+    "signed_round_trip": "PASS",
+    "blocked_widths": "PASS",
+    "jax_equivalence": "PASS"
+  },
+  "jax": {
+    "jax_present": true,
+    "x64": true,
+    "max_err_vs_numpy": 1.4210854715202004e-14,
+    "pass": true
+  },
+  "status": "reference-verified on CPU; real sign vectors still come from notebook 02"
+}

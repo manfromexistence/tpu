@@ -38,11 +38,11 @@ should be able to see when it spent its budget in a think block.
 ## Pointing it elsewhere
 
 The default URL is whichever session was live when this was written and it will go
-stale. Precedence: `-Endpoint` > `$env:DQ_URL` > `~/.dq.json` > the built-in default.
+stale. Precedence: `-Endpoint` > `$colab-env-patch:DQ_URL` > `~/.dq.json` > the built-in default.
 
 ```powershell
 dq -Endpoint "https://new-tunnel.trycloudflare.com"
-$env:DQ_URL = "https://new-tunnel.trycloudflare.com"
+$colab-env-patch:DQ_URL = "https://new-tunnel.trycloudflare.com"
 ```
 
 ## Limits, stated plainly

@@ -1,0 +1,87 @@
+{
+  "gguf_path": "/content/gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+  "file_present": true,
+  "gguf_version": 3,
+  "n_tensors": 851,
+  "n_metadata_keys": 49,
+  "tensor_count_by_dtype_id": {
+    "0": 353,
+    "30": 96,
+    "143": 402
+  },
+  "distinct_input_widths": [
+    48,
+    128,
+    256,
+    1024,
+    5120,
+    6144,
+    10240,
+    12288,
+    17408,
+    248320
+  ],
+  "prism_keys": [
+    "prism.hadamard.axis",
+    "prism.hadamard.block_size",
+    "prism.hadamard.gdn_v_grouped",
+    "prism.hadamard.inverse_weight_names",
+    "prism.hadamard.sign_mode",
+    "prism.hadamard.sign_values",
+    "prism.hadamard.sign_widths",
+    "prism.hadamard.transform",
+    "prism.hadamard.version",
+    "prism.hadamard.weight_names"
+  ],
+  "brief_checks": {
+    "block_size": {
+      "key": "prism.hadamard.block_size",
+      "value": 1024,
+      "matches_brief_1024": true
+    },
+    "sign_schema": {
+      "widths": [
+        5120,
+        6144,
+        17408
+      ],
+      "n_values": 28672,
+      "sums_to_widths": true,
+      "all_pm1": true,
+      "per_width_all_pm1": {
+        "5120": true,
+        "6144": true,
+        "17408": true
+      }
+    },
+    "weight_map": {
+      "n_forward": 401,
+      "width_histogram": {
+        "248320": 1,
+        "10240": 48,
+        "6144": 48,
+        "5120": 128,
+        "17408": 128,
+        "1024": 32,
+        "12288": 16
+      },
+      "widths_with_sign_vector": [
+        5120,
+        6144,
+        17408
+      ],
+      "widths_without_sign_vector": [
+        1024,
+        10240,
+        12288,
+        248320
+      ],
+      "unmapped_names": [],
+      "inverse": [
+        "token_embd.weight"
+      ]
+    }
+  },
+  "notebook": "02-gguf-format-and-sign-metadata",
+  "status": "measured"
+}

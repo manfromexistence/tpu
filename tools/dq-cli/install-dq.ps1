@@ -7,7 +7,7 @@
     User PATH if it is not already there, so `dq` works from any new shell.
 
     The User PATH is edited via the registry-backed [Environment] API, not by setting
-    $env:Path in this process, because setting the process variable would vanish when
+    $colab-env-patch:Path in this process, because setting the process variable would vanish when
     the shell exits and the CLI would only work in sessions started from here.
 
 .PARAMETER Target

@@ -1,0 +1,22 @@
+{
+  "notebook": "14-lane-aligned-ternary-kernel",
+  "backend": "tpu",
+  "jax": "0.11.2",
+  "batch": 32,
+  "n_gen": 32,
+  "prompt": "Hello",
+  "max_t": 64,
+  "state_dtype": "float16",
+  "out_tile_tc": 512,
+  "cache_pallas_callable": true,
+  "weights": "PTQ1_0 consumed as packed bytes, in-kernel unpack",
+  "layout": "transposed (32, rows); lanes = out-columns; x @ w",
+  "padding": "28 real bytes + 4 pad in each 32-byte row",
+  "decode": "concatenate along axis 0 (in-dims on sublanes), int16 lanes",
+  "decode_seconds": 7.604,
+  "aggregate_tok_per_s": 134.67,
+  "ms_per_step": 237.6,
+  "first_token": 11,
+  "sample": ", I'm a student in the University of the West of England (UWE) Bristol, and I are writing a formal letter to the Dean of the School",
+  "claim": "[exec] measured on Colab TPU v5e-1"
+}
