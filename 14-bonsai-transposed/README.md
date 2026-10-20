@@ -144,6 +144,16 @@ build: `receipt-14-prompt-b80-f16-tc1024.json` (batch 80, 64 generated, 268.3
 tok/s) and `receipt-14-prompt-b64-f16-tc1024.json` (batch 64, 128 generated,
 207.1 tok/s -- long enough to reach the answered part of the continuation).
 
+**Context cost at fixed batch, measured 2026-10-20 (batch 1, the fused step, one
+prompt throughout):** `max_t` 83 -> **152.3 ms/step (6.57 tok/s)**, `max_t` 1024 ->
+153.6 ms (6.51 tok/s), `max_t` 8192 -> **180.9 ms (5.53 tok/s)** -- receipts
+`receipt-14-ctx64-b1-f16-tc1024.json`, `receipt-14-ctx1024-b1-f16-tc1024.json`,
+`receipt-14-ctx8192-b1-f16-tc1024.json`. **The whole 8k window costs 19 %** at batch
+1, which makes the unpack, not the context, the thing to fix for single-stream
+throughput. The `max_t` 45056 point needs `FUSE=0`: with the fused step it does not
+compile (*"CompileTimeHbmOom: ... HLO temporaries (18.92G) exceeds available HBM
+(15.75G)"*).
+
 **Context cost -- corrected 2026-10-20, because the curve is confounded.**
 The per-step ms on this build: 284.7 (`max_t` 64, batch 80) -> 298 (`max_t` 96,
 batch 80) -> 309 (`max_t` 160, batch 64) -> 638 (`max_t` 320, batch 48) -> 662
@@ -165,4 +175,4 @@ and batch 32 / 460 generated at `max_t` 512 measured 48.3 tok/s
 (`receipt-14-essay-b32-f16-tc1024.json`).
 
 MIT OR Apache-2.0
-updated: 2026-10-20 13:08 UTC
+updated: 2026-10-20 21:10 UTC
