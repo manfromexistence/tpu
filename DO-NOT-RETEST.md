@@ -317,6 +317,8 @@ every arm was numerically exact (first token `271`, identical generated text).
 | **the kv-head expansion costs ~25 ms/step at an 8k window** | `K[:, :, _KIDX, :]` is (B, T, 24, 256) -- 201 MB per layer per step, 3.2 GB per step; contracting the query groups against the kv heads directly reads the KV once instead of six times, and saves 25.4 ms |
 | **the concatenation is not the traffic problem** | removing both concatenations made the step **18.5 % slower**: the fourteen groups are 5x16, 5x8 and 4x2 rows, and the MXU pads each to K=128, so 14 x 128 = 1792 K-slots instead of 128 |
 | the unpacked rows of a tile are the **in-dims**, not the out-columns | contracting a 16-row group against the whole (128, QK) x failed with *"contracting dimensions to have the same shape, got (128,) and (16,)"* |
+| **the window ceiling is set by the whole-model jit's compile-time temporaries, not by the KV dtype** | `KVDTYPE=float16` at `max_t` 65536 fails with *"CompileTimeHbmOom: ... HLO temporaries (22.68G) exceeds available HBM (15.75G)"*, and at 131072 with *"RuntimeBufferAllocationFailure: Error allocating device buffer: Attempting to allocate 512.00M. That was not possible. There are 184.60M free"*; `KVDTYPE=float32` at 65536 lost its connection during the (very slow) compile, so that point is **inconclusive**, not a measurement |
+| the KV cache dtype is now selectable and the attention reads it in its own precision | `KVDTYPE=fp32|fp16|bf16` in `14-bonsai-transposed/kernel.py`: the write casts into the cache dtype and the query is cast to match, so the matmul runs in the cache's precision and no full-size f32 upcast of the cache is materialised -- that temporary would eat the whole saving. A true 4-bit cache needs the dequant fused into the attention (a flash-style Pallas kernel): a 4-bit cache read through an f32 einsum is upcast straight back to 32 bits per element |
 | the kv head is the same index in both operands of the grouped attention | the first version used `h` for the query group and `h` for the cache and JAX accepted it silently, producing garbage (first token 220, output `" 3 3 3 ..."`); the corrected form uses `h` in both, with the query head index `h*G + g`, the same order as the expanded `_KIDX` path |
 | **do not re-run the "it is the VMEM traffic" theory** | the one experiment that could have tested it says the opposite |
 | **the fused whole-model jit fits only the single-stream regime** | `CompileTimeHbmOom: HLO temporaries (20.08G) exceeds available HBM (15.75G)`, module `jit_full_step`, at batch 80 as well as at a 45k window; the aggregate path (281.01 tok/s) needs the per-layer jit (`FUSE=0`) |
@@ -354,4 +356,4 @@ every arm was numerically exact (first token `271`, identical generated text).
 | **do not** spend a session on this lever without a new reason | - |
 
 MIT OR Apache-2.0
-updated: 2026-10-20 23:50 UTC
+updated: 2026-10-21 01:45 UTC
