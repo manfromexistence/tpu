@@ -217,7 +217,22 @@ if not draft_flags:
 CTX = 8192
 NTOK = 128
 PROMPT = "Hello, Who are you?"
-env = dict(os.environ, CUDA_VISIBLE_DEVICES="0")
+
+# Kaggle hands this kernel 2x T4 (the repo's own bonsai2-27b-t4 kernel says so).
+# Every earlier run pinned CUDA_VISIBLE_DEVICES=0, so the second GPU was never
+# used. llama.cpp splits the model across every visible GPU by default, and the
+# decode is a 5.9 GB weight read per token -- so two GPUs is a real lever, and
+# the only honest way to know is to measure both.
+DEVICES = []
+try:
+    _smi = sh("nvidia-smi -L 2>&1", timeout=60, check=False).stdout or ""
+    DEVICES = [l.strip() for l in _smi.splitlines() if l.strip()]
+except Exception:  # noqa: BLE001
+    DEVICES = []
+say(f"visible GPUs: {len(DEVICES)}")
+for d in DEVICES:
+    say(f"  {d}")
+ALL_GPUS = ",".join(str(i) for i in range(len(DEVICES))) if DEVICES else "0"
 
 BASE = [str(CLI), "-m", str(LOCAL_MODEL), "-ngl", "99", "-c", str(CTX),
         "-n", str(NTOK), "--temp", "0", "-p", PROMPT,
@@ -241,13 +256,14 @@ def parse(out):
     }
 
 
-def run_stage(label, extra):
-    say(f"=== stage: {label} ===")
+def run_stage(label, extra, gpus="0"):
+    say(f"=== stage: {label} (CUDA_VISIBLE_DEVICES={gpus}) ===")
     cmd = BASE + extra
     say(" ".join(cmd))
+    stage_env = dict(os.environ, CUDA_VISIBLE_DEVICES=gpus)
     t0 = time.time()
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=2400,
-                       check=False, env=env)
+                       check=False, env=stage_env)
     elapsed = time.time() - t0
     out = (p.stdout or "") + (p.stderr or "")
     log.write(out[-20000:] + "\n")
@@ -257,9 +273,14 @@ def run_stage(label, extra):
 
 results = {}
 
-base, base_t, base_rc = run_stage("baseline (no speculation)", [])
-results["baseline"] = dict(spec=None, **base, wall_seconds=round(base_t, 1),
-                           exit_code=base_rc)
+base, base_t, base_rc = run_stage("baseline (no speculation)", [], "0")
+results["baseline_1gpu"] = dict(spec=None, gpus=1, **base,
+                                 wall_seconds=round(base_t, 1), exit_code=base_rc)
+if len(DEVICES) > 1:
+    b2, b2_t, b2_rc = run_stage("baseline, all GPUs (llama.cpp splits the model)",
+                                [], ALL_GPUS)
+    results["baseline_allgpus"] = dict(spec=None, gpus=len(DEVICES), **b2,
+                                       wall_seconds=round(b2_t, 1), exit_code=b2_rc)
 
 if draft_flags:
     extra = [draft_flags[0], str(DRAFT)]
@@ -275,16 +296,18 @@ if draft_flags:
         extra += ["--spec-type", "draft-simple"]
     if "--spec-draft-n-max" in have:
         extra += ["--spec-draft-n-max", "4"]
-    d, d_t, d_rc = run_stage("draft model (Qwen3.5-0.8B Q4_0)", extra)
-    results["draft_model"] = dict(spec="draft-simple", draft=DRAFT.name, **d,
+    d, d_t, d_rc = run_stage("draft model (Qwen3.5-0.8B Q4_0)", extra, ALL_GPUS)
+    results["draft_model"] = dict(spec="draft-simple", draft=DRAFT.name,
+                                   gpus=len(DEVICES), **d,
                                    wall_seconds=round(d_t, 1), exit_code=d_rc)
 
 for nt in ("ngram-mod", "ngram-simple", "ngram-cache"):
     if "--spec-type" not in have:
         break
-    n, n_t, n_rc = run_stage(f"n-gram speculation ({nt})", ["--spec-type", nt])
-    results[f"ngram_{nt}"] = dict(spec=nt, **n, wall_seconds=round(n_t, 1),
-                                  exit_code=n_rc)
+    n, n_t, n_rc = run_stage(f"n-gram speculation ({nt})", ["--spec-type", nt],
+                              ALL_GPUS)
+    results[f"ngram_{nt}"] = dict(spec=nt, gpus=len(DEVICES), **n,
+                                  wall_seconds=round(n_t, 1), exit_code=n_rc)
     if n["gen_tok_s"]:
         break
 
@@ -295,7 +318,8 @@ for k, v in results.items():
 
 receipt = {
     "platform": "kaggle",
-    "accelerator": "T4 (1x)",
+    "accelerator": "T4 x" + str(len(DEVICES)),
+    "accelerator_detected": DEVICES,
     "target": LOCAL_MODEL.name,
     "target_bytes": LOCAL_MODEL.stat().st_size,
     "draft": DRAFT.name,
@@ -307,6 +331,12 @@ receipt = {
     "stages": results,
     "best_tok_s": max([v["gen_tok_s"] for v in results.values()
                        if v.get("gen_tok_s")] or [None]),
+    "baseline_1gpu_tok_s": results["baseline_1gpu"].get("gen_tok_s"),
+    "allgpus_gain": (round(results["baseline_allgpus"]["gen_tok_s"]
+                            / results["baseline_1gpu"]["gen_tok_s"], 2)
+                     if "baseline_allgpus" in results
+                     and results["baseline_allgpus"].get("gen_tok_s")
+                     and results["baseline_1gpu"].get("gen_tok_s") else None),
     "target_has_mtp_head": False,
     "target_mtp_evidence": "GGUF header: 851 tensors, 0 named nextn/mtp, no qwen35.nextn_block_count (measured 2026-10-20)",
     "reference_not_measured_here": "pich, RTX PRO 4000 24GB, Qwen3.8-27B GGUF: 50.44 tok/s @ 48.3% acceptance (MTP head, which this file does not have)",

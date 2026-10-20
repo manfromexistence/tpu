@@ -258,14 +258,19 @@ tok/s** -- 9.5x the lane-starved baseline. The wall at batch 80 is memory
 | a persistent compile cache (`jax_compilation_cache_dir=/content/jaxcache`) makes the rerun's prefill 4.6 s instead of a fresh compile | same run, prefill line |
 | the correctness gate value is **prompt-dependent**: `Hello` -> first token 11 `','`; a 17-token prompt -> 271. A check that expects one value for every prompt will abort a good run | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-fused-smoke.json`, `receipt-14-b1-f16-tc1024-fused.json` |
 
-## 10. The step is launch-overhead-bound, not bandwidth-bound
+## 10. The step is **not** launch-overhead-bound: the projections' own work is the cost
+
+**This section was wrong on 2026-10-18 and was corrected by measurement on
+2026-10-20. Read the correction, not the original claim.**
 
 | Fact | Evidence |
 | --- | --- |
-| 180.6 ms/step at batch 1 (`max_t` 8192) against 284.7 ms/step at batch 80 (`max_t` 64): 80 sequences cost 1.58x one sequence, so the marginal cost of a sequence is ~1.3 ms and the fixed cost is ~176 ms | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-fused.json`, `receipt-14-b80-f16-tc1024.json` |
-| a step launches ~400 projections (48 GDN layers x 6 + 16 attention layers x 7), i.e. ~0.44 ms of fixed cost each | `14-bonsai-transposed/kernel.py` |
-| the traffic floor is 6.37 GiB / 709 GB/s = 9.0 ms, so 20 ms/step (50 tok/s) is 2.2x the floor | `13-cost-sweep/README.md:28` |
-| **consequence:** 50 tok/s on this TPU needs the fixed cost amortised over several tokens (a multi-token verification pass), not tuning | `TODO.md` `TPU-03` |
+| 180.6 ms/step at batch 1 (`max_t` 8192) against 284.7 ms/step at batch 80 (`max_t` 64): 80 sequences cost 1.58x one sequence | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-fused.json`, `receipt-14-b80-f16-tc1024.json` |
+| the step launches ~400 projections (48 GDN layers x 6 + 16 attention layers x 7) | `14-bonsai-transposed/kernel.py` |
+| **CORRECTION: the launches are not the cost.** Merging the projections that share an input took the launch count from 400 to 256 -- **36 % fewer -- and the step time moved from 182.3 ms to 181.3 ms, i.e. 0.5 %.** The first token is `271` in both runs and the 64 generated tokens are byte-identical, so the fusion is exact | `14-bonsai-transposed/receipt-14-fuse0-b1-f16-tc1024.json`, `receipt-14-fuse1-b1-f16-tc1024.json` |
+| what the step really pays for is the **per-weight-byte VPU work**: the ternary unpack of 6.37 GiB of packed bytes, every token, for every sequence. That is why 80 streams share one unpack and one stream pays it alone | same receipts; `13-cost-sweep/README.md:28` (the unpack is 82 % of a projection) |
+| the traffic floor is 6.37 GiB / 709 GB/s = 9.0 ms, so the step is ~20x off the HBM roofline | `13-cost-sweep/README.md:28` |
+| **consequence:** 50 tok/s (20 ms/step) needs the unpack itself to be ~9x faster, or a pass that processes several tokens against the same unpacked weights (`TODO.md` `TPU-03`, `TPU-07`) | same |
 
 ## 11. The single-chat fp32 context ceiling is 45k, and 64k needs a q4 KV cache that does not exist
 
@@ -295,7 +300,26 @@ tok/s** -- 9.5x the lane-starved baseline. The wall at batch 80 is memory
 - *"Context is expensive, batch is not"* (said in conversation on 2026-10-19) is
   **withdrawn**: the 638/662 ms step times were measured at batch 48 and 32,
   which are smaller than the 284.7 ms run at batch 80.
+- *"The step is launch-overhead-bound"* (section 10 as it was written on
+  2026-10-18) is **withdrawn**: 36 % fewer launches moved the step time 0.5 %.
+
+## 14. Bonsai 2's GGUFs carry no MTP head (measured from the files themselves)
+
+| Fact | Evidence |
+| --- | --- |
+| `Ternary-Bonsai-2-27B-PTQ1_0.gguf`, `-PQ2_0.gguf` and `-F16.gguf` each report **851 tensors, 64 blocks, and zero tensors named `nextn`/`mtp`**, and none has a `qwen35.nextn_block_count` key | GGUF headers read with 40 MB byte-range requests, 2026-10-20 |
+| the architecture is `qwen35` with `context_length 262144`, 24/4 heads, `full_attention_interval 4` (48 GDN + 16 attention), and the `prism.hadamard.*` metadata | same |
+| the base model is `Qwen/Qwen3.8-27B` and *does* have the head: unsloth publishes it as a standalone file `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` (18 tensors, `qwen35.nextn_predict_layers: 1`, of which 15 are the `blk.64.*` block) | HF API, 2026-10-20 |
+| **so** llama.cpp's `--spec-type draft-mtp` cannot work on the target file as shipped, and the head has to come from the base model | same |
+
+## 15. Pallas `num_scalar_prefetch` does not fit this kernel's grid
+
+| Fact | Evidence |
+| --- | --- |
+| setting `num_scalar_prefetch=1` on this kernel's `PrefetchScalarGridSpec` fails to compile: *"Pytree for `in_specs` and `inputs` do not match ... `in_specs` is a tuple of length 3 but `inputs` is a tuple of length 2"* | run log 2026-10-20 19:52; the knob is `PREFETCH` in `14-bonsai-transposed/kernel.py`, default 0 |
+| the prefetch mechanism wants the prefetched dimension to be a **scalar** dim; this kernel's grid is `(TOUT, 1, BPC)` with the parallel dim first | same |
+| the ceiling was small anyway: the weight DMA is 0.29 ms of a 3.83 ms projection (7.6 %), and the A/B above shows the step is VPU-bound rather than DMA-exposed | `13-cost-sweep/README.md:63-76` |
+| **do not** spend a session on this lever without a new reason | - |
 
 MIT OR Apache-2.0
-updated: 2026-10-20 13:08 UTC
-
+updated: 2026-10-20 20:10 UTC
