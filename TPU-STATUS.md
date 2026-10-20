@@ -1,6 +1,14 @@
 # TPU execution track — status
 
-## Current best (2026-10-18)
+## Current best (2026-10-20)
+
+**Two numbers, two different quantities.** Aggregate: **281.01 tok/s, batch 80,
+284.7 ms/step**. Single stream: **5.54 tok/s, 180.6 ms/step** at an 8k context
+window, measured 2026-10-19 with the 64-layer step fused into one jitted
+program (`14-bonsai-transposed/receipt-14-b1-f16-tc1024-fused.json`). The
+aggregate is 80 conversations advancing in lockstep; the single-stream figure is
+one conversation. They are not alternatives and must not be quoted as if they
+were.
 
 **281.01 tok/s aggregate, batch 80, 284.7 ms/step** — the real 64-layer model
 with every ternary projection served by a fused PTQ1_0 Pallas kernel, on the
@@ -34,9 +42,41 @@ to TC 512 (1.21x) and int16 decode width (1.20x) — `DO-NOT-RETEST.md` §7.
 | nb 11, `concatenate` decode, TC 512, int32 | 24.68 | log only (receipt overwritten) |
 | **nb 11, `concatenate` decode, TC 512, int16** | **29.66** | `11-bonsai-fused-full/receipt-dec-cat-int16-tc512.json` |
 | **nb 14 lane-aligned, batch 80, f16 state, TC 1024** | **281.01** | `14-bonsai-transposed/receipt-14-b80-f16-tc1024.json` |
+| nb 14, batch 1, 8k window, per-layer jit | 4.62 | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-franch.json` |
+| **nb 14, batch 1, 8k window, fused 64-layer step** | **5.54** | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-fused.json` |
+| nb 14, batch 1, 45k window, fp32 KV | 2.86 | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-45056.json` |
 | nb 14, batch 80, f16 state, TC 512 | 266.37 | `14-bonsai-transposed/receipt-14-b80-f16-tc512.json` |
 | nb 14, batch 32, f16 state, TC 512 | 134.67 | `14-bonsai-transposed/receipt-14-b32-f16-tc512.json` |
 | nb 14, batch 32, f32 state, TC 512 (lane flip alone) | 130.30 | `14-bonsai-transposed/receipt-14-b32-f32-tc512.json` |
+
+## The 50 tok/s target: where the route actually is (2026-10-20)
+
+**The target is 50 tok/s for a single stream on an 8k window.** Four measured
+facts decide the route:
+
+| fact | value | receipt |
+| --- | --- | --- |
+| one stream, 8k window | 180.6 ms/step | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-fused.json` |
+| 80 streams, 64-token window | 284.7 ms/step | `14-bonsai-transposed/receipt-14-b80-f16-tc1024.json` |
+| weight-traffic floor | 6.37 GiB / 709 GB/s = 9.0 ms | `13-cost-sweep/README.md:28` |
+| projections launched per step | ~400 (48 GDN x 6 + 16 attn x 7) | `14-bonsai-transposed/kernel.py` |
+
+80 sequences cost 1.58x one sequence, so the TPU step is **~85 % per-projection
+launch overhead**, not bandwidth. 50 tok/s is 20 ms/step, which is 2.2x the
+traffic floor: reachable on this hardware only if that fixed cost is amortised
+over several tokens, which is a multi-token verification pass, not tuning.
+
+**The route with a number attached to it is MTP speculative decoding, and the
+cheapest proof of it is a GPU run.** llama.cpp's `--spec-type draft-mtp
+--spec-draft-n-max 8` gave **50.44 tok/s at 48.3 % acceptance** on the
+reference Qwen3.8-27B GGUF, and the same 27B dense model on the same Kaggle T4
+with no draft gave **25.5 tok/s** (`mtp-test/kernel.py:3-4`,
+`spec-draft/kernel.py:8-9`). The draft is the checkpoint's own multi-token
+prediction head, so nothing new is downloaded. The open question is whether
+PrismML's PTQ1_0 quantization kept that head at all.
+
+Open work, each with its evidence and a `Done when` check, is in the
+repository ledger: `TODO.md` `GPU-01`...`GPU-03` and `TPU-01`...`TPU-06`.
 
 ## Result (2026-10-17, first TPU run of this model)
 
@@ -154,9 +194,6 @@ greedy argmax amplifies small logit differences, this is enough to make the
 generated text diverge from llama.cpp after a few tokens — while staying
 fluent, which is the evidence that the model is genuinely running.
 
-MIT OR Apache-2.0
-updated: 2026-10-16 00:00 UTC
-
 ## Notebook 06 (2026-10-16, [exec] on Colab TPU v5e-1)
 
 Fixed-size KV + vmap batching + per-layer jit. Measured:
@@ -263,4 +300,4 @@ notebook 14 and both paid**:
    receipts in `14-bonsai-transposed/`.
 
 MIT OR Apache-2.0
-updated: 2026-10-18 05:45 UTC
+updated: 2026-10-20 13:08 UTC

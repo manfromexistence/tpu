@@ -248,6 +248,54 @@ Best measured configuration: **batch 80, f16 state storage, TC 1024 = 281.01
 tok/s** -- 9.5x the lane-starved baseline. The wall at batch 80 is memory
 (15.67 of 15.75 GiB), not the kernel.
 
+## 9. The fused 64-layer step, and the constants trap that ate 2 h 12 m
+
+| Fact | Evidence |
+| --- | --- |
+| all 64 layers in one `jax.jit` compiles in **139.6 s** and runs the model at **180.6 ms/step** (batch 1, `max_t` 8192): **5.54 tok/s**, first token 271, output byte-identical to the per-layer-jit run | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-fused.json` against `receipt-14-b1-f16-tc1024-franch.json` (4.62 tok/s) |
+| **Do not close over the weight tiles.** JAX then captures the whole weight set as constants: *"A large amount of constants were captured during lowering (6.95GB total)"*. The compile never finished and the kernel connection dropped 2 h 12 m later with the job still running | session log 2026-10-19 13:11-15:23 |
+| pass the per-layer weight pytree as an **argument** and the same program compiles in 139.6 s | same |
+| a persistent compile cache (`jax_compilation_cache_dir=/content/jaxcache`) makes the rerun's prefill 4.6 s instead of a fresh compile | same run, prefill line |
+| the correctness gate value is **prompt-dependent**: `Hello` -> first token 11 `','`; a 17-token prompt -> 271. A check that expects one value for every prompt will abort a good run | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-fused-smoke.json`, `receipt-14-b1-f16-tc1024-fused.json` |
+
+## 10. The step is launch-overhead-bound, not bandwidth-bound
+
+| Fact | Evidence |
+| --- | --- |
+| 180.6 ms/step at batch 1 (`max_t` 8192) against 284.7 ms/step at batch 80 (`max_t` 64): 80 sequences cost 1.58x one sequence, so the marginal cost of a sequence is ~1.3 ms and the fixed cost is ~176 ms | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-fused.json`, `receipt-14-b80-f16-tc1024.json` |
+| a step launches ~400 projections (48 GDN layers x 6 + 16 attention layers x 7), i.e. ~0.44 ms of fixed cost each | `14-bonsai-transposed/kernel.py` |
+| the traffic floor is 6.37 GiB / 709 GB/s = 9.0 ms, so 20 ms/step (50 tok/s) is 2.2x the floor | `13-cost-sweep/README.md:28` |
+| **consequence:** 50 tok/s on this TPU needs the fixed cost amortised over several tokens (a multi-token verification pass), not tuning | `TODO.md` `TPU-03` |
+
+## 11. The single-chat fp32 context ceiling is 45k, and 64k needs a q4 KV cache that does not exist
+
+| Fact | Evidence |
+| --- | --- |
+| `max_t` 45056 runs: 2.86 tok/s, 350.1 ms/step, peak 14.01 GiB | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-45056.json` |
+| `max_t` 49152 is **140 MB short** of loading `jit_attn_step` (needs 2.44 GB, 2.30 GB free) | `14-bonsai-transposed/receipt-14-mem-ceiling.json` |
+| `max_t` 65536 needs 3.26 GB with 184.53 MB free | same |
+| fp32 KV is 128 KiB/token/sequence; q4 would be 16 KiB, making 64k fit at ~11.3 GiB -- **not implemented**: there is no q4 KV path and no blocked or paged attention | same |
+
+## 12. The Colab v5e1 pool is quota-limited; the unlock is a re-auth
+
+| Fact | Evidence |
+| --- | --- |
+| 25 consecutive `503 Service Unavailable` on `colab new --tpu v5e1`, then `Session READY` on the first attempt after the account was re-authorised | 2026-10-19 12:31-13:08 |
+| a second round the same evening: 3 failures, then OK on try 4 | 2026-10-19 18:42-18:47 |
+| the account itself is fine: `colab new` with no accelerator assigns a CPU session immediately, and `--tpu v6e1` is refused with *"You may not have quota or entitlement"* | 2026-10-19 probes |
+| the 120 s auth timeout patch is still required for the re-auth flow itself | `env/colab_timeout_patch.py`, `env/zz_colab_timeout.pth` |
+| **after any session re-create the GGUF is gone** (5.54 GiB, `/content/gguf/`) -- re-download before the next run, or the kernel opens a file that is not there | run logs 2026-10-19 |
+
+## 13. Corrections to claims made on this track
+
+- *"The decode step scales with MAX_T, not only with the batch"* (in
+  `14-bonsai-transposed/README.md`) is **confounded**: the long-context runs also
+  used the smaller batches, so neither term is isolated. The context cost at
+  fixed batch has never been measured -- `TODO.md` `TPU-06`.
+- *"Context is expensive, batch is not"* (said in conversation on 2026-10-19) is
+  **withdrawn**: the 638/662 ms step times were measured at batch 48 and 32,
+  which are smaller than the 284.7 ms run at batch 80.
+
 MIT OR Apache-2.0
-updated: 2026-10-18 05:45 UTC
+updated: 2026-10-20 13:08 UTC
 
