@@ -51,6 +51,8 @@ from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 
 print(f"jax {jax.__version__} | backend {jax.default_backend()}")
+jax.config.update("jax_compilation_cache_dir", "/content/jaxcache")
+jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.5)
 
 PROMPT = os.environ.get("PROMPT", "Hello")
 N_GEN = int(os.environ.get("N_TOKENS", "32"))
@@ -201,11 +203,12 @@ _pallas_cached = functools.lru_cache(maxsize=None)(_pallas) if CACHE else _palla
 GEOM = {}
 
 
-def proj(x, tile, name):
+def proj(x, tile, name, B=None):
     """x: (B, IN) fp32 -> (B, OUT) fp32, weights consumed as packed bytes."""
+    if B is None:
+        B = x.shape[0]
     rep, sc = tile
     IN, OUT, BPC, TOUT = GEOM[name]
-    B = x.shape[0]
     return _pallas_cached((IN, OUT, BPC, TOUT), B)(
         x.astype(jnp.bfloat16), rep, sc).astype(jnp.float32)
 
@@ -297,13 +300,15 @@ _ISS = 1.0 / jnp.sqrt(jnp.float32(HD))
 _SSS = 1.0 / jnp.sqrt(jnp.float32(ST))
 
 
-def gdn_core(h, T, SW, S, hist):
+def gdn_core(h, T, SW, S, hist, B=None):
+    if B is None:
+        B = h.shape[0]
     sdt = S.dtype
     S = S.astype(jnp.float32)              # fp16 storage, fp32 recurrence
-    x, B = h, h.shape[0]
+    x = h
     hf = fold_b(h, ROW)
-    qkv = proj(hf, T["attn_qkv.weight"], "attn_qkv.weight")
-    z = proj(hf, T["attn_gate.weight"], "attn_gate.weight")
+    qkv = proj(hf, T["attn_qkv.weight"], "attn_qkv.weight", B)
+    z = proj(hf, T["attn_gate.weight"], "attn_gate.weight", B)
     beta = jax.nn.sigmoid(h @ SW["ssm_beta.weight"])
     alpha = h @ SW["ssm_alpha.weight"]
     gate = SW["ssm_a"] * jnp.logaddexp(alpha + SW["ssm_dt.bias"], 0.0)
@@ -330,18 +335,19 @@ def gdn_core(h, T, SW, S, hist):
     Q = jnp.transpose(o[:, :, _PERM], (0, 2, 3, 1))        # (B, NK, REP, ST)
     flat = Q.reshape(B, -1)
     return proj(fold_b(flat, SIGNS[ST * NV]), T["ssm_out.weight"],
-                "ssm_out.weight"), Sg.astype(sdt), win[:, 1:, :]
+                "ssm_out.weight", B), Sg.astype(sdt), win[:, 1:, :]
 
 
-def attn_core(h, T, SW, K, V, pos):
-    B = h.shape[0]
+def attn_core(h, T, SW, K, V, pos, B=None):
+    if B is None:
+        B = h.shape[0]
     hf = fold_b(h, ROW)
-    qg = proj(hf, T["attn_q.weight"], "attn_q.weight").reshape(B, H, 2, HD)
+    qg = proj(hf, T["attn_q.weight"], "attn_q.weight", B).reshape(B, H, 2, HD)
     q, g = qg[:, :, 0, :], qg[:, :, 1, :]
     q = rms(q, SW["attn_q_norm.weight"], EPS)
-    k = rms(proj(hf, T["attn_k.weight"], "attn_k.weight").reshape(B, HKV, HD),
+    k = rms(proj(hf, T["attn_k.weight"], "attn_k.weight", B).reshape(B, HKV, HD),
             SW["attn_k_norm.weight"], EPS)
-    v = proj(hf, T["attn_v.weight"], "attn_v.weight").reshape(B, HKV, HD)
+    v = proj(hf, T["attn_v.weight"], "attn_v.weight", B).reshape(B, HKV, HD)
     q, k = rope(q, pos), rope(k, pos)
     K = jax.lax.dynamic_update_slice(K, k[:, None], (0, pos, 0, 0))
     V = jax.lax.dynamic_update_slice(V, v[:, None], (0, pos, 0, 0))
@@ -352,47 +358,85 @@ def attn_core(h, T, SW, K, V, pos):
     o = jnp.einsum("bht,bthd->bhd", p, V[:, :, _KIDX, :])
     o = o * jax.nn.sigmoid(g)
     return proj(fold_b(o.reshape(B, -1), SIGNS[H * HD]), T["attn_output.weight"],
-                "attn_output.weight"), K, V
+                "attn_output.weight", B), K, V
 
 
-def ffn_core(h, T):
+def ffn_core(h, T, B=None):
+    if B is None:
+        B = h.shape[0]
     hf = fold_b(h, ROW)
-    g = proj(hf, T["ffn_gate.weight"], "ffn_gate.weight")
-    u = proj(hf, T["ffn_up.weight"], "ffn_up.weight")
+    g = proj(hf, T["ffn_gate.weight"], "ffn_gate.weight", B)
+    u = proj(hf, T["ffn_up.weight"], "ffn_up.weight", B)
     return proj(fold_b(jax.nn.silu(g) * u, SIGNS[NFF]), T["ffn_down.weight"],
-                "ffn_down.weight")
+                "ffn_down.weight", B)
 
 
-@jax.jit
-def gdn_step(x, T, S, hist, an, pan, beta_w, alpha_w, aa, dtb, cv1, sn):
+def gdn_step(x, T, S, hist, an, pan, beta_w, alpha_w, aa, dtb, cv1, sn, B=None):
+    if B is None:
+        B = x.shape[0]
     h = rms(x, an, EPS)
     a, S, hist = gdn_core(h, T, {"ssm_beta.weight": beta_w, "ssm_alpha.weight": alpha_w,
                                  "ssm_a": aa, "ssm_dt.bias": dtb,
                                  "ssm_conv1d.weight": cv1, "ssm_norm.weight": sn},
-                          S, hist)
-    f = ffn_core(rms(x + a, pan, EPS), T)
+                          S, hist, B)
+    f = ffn_core(rms(x + a, pan, EPS), T, B)
     return x + a + f, S, hist
 
 
-@jax.jit
-def attn_step(x, T, K, V, pos, an, pan, qn, kn):
+def attn_step(x, T, K, V, pos, an, pan, qn, kn, B=None):
+    if B is None:
+        B = x.shape[0]
     h = rms(x, an, EPS)
     a, K, V = attn_core(h, T, {"attn_q_norm.weight": qn,
-                               "attn_k_norm.weight": kn}, K, V, pos)
-    f = ffn_core(rms(x + a, pan, EPS), T)
+                               "attn_k_norm.weight": kn}, K, V, pos, B)
+    f = ffn_core(rms(x + a, pan, EPS), T, B)
     return x + a + f, K, V
 
+# %% cell
+# Fused single-step: all 64 layers in one jitted program.
+# Eliminates 63 of the 64 per-layer host dispatches that dominate the 216 ms/step.
+def full_step(x, pos, S_in, C_in, K_in, V_in, W, B):
+    S = list(S_in)
+    C = list(C_in)
+    K = list(K_in)
+    V = list(V_in)
+    gi = ai = 0
+    for il in range(NL):
+        T, SW = W[2 * il], W[2 * il + 1]
+        if IS_RECR[il]:
+            x, S[gi], C[gi] = gdn_step(
+                x, T, S[gi], C[gi], SW["attn_norm.weight"],
+                SW["post_attention_norm.weight"], SW["ssm_beta.weight"],
+                SW["ssm_alpha.weight"], SW["ssm_a"], SW["ssm_dt.bias"],
+                SW["ssm_conv1d.weight"], SW["ssm_norm.weight"], B)
+            gi += 1
+        else:
+            x, K[ai], V[ai] = attn_step(
+                x, T, K[ai], V[ai], pos, SW["attn_norm.weight"],
+                SW["post_attention_norm.weight"], SW["attn_q_norm.weight"],
+                SW["attn_k_norm.weight"], B)
+            ai += 1
+    return x, tuple(S), tuple(C), tuple(K), tuple(V)
 
-def logits_b(h):
+jitted_step = jax.jit(full_step, static_argnums=(7,))
+
+
+
+def _logits_raw(h, out_raw):
     xf = fold_b(rms(h, O_NORM, EPS), ROW).T                # (NEMB, B)
     nb = NEMB // QK
     per = nb * BLK
     parts = []
     for t0 in range(0, VOCAB, 4096):
         t1 = min(t0 + 4096, VOCAB)
-        W = decode_ptq1_dev(OUT_RAW[t0 * per:t1 * per]).reshape(t1 - t0, -1)
+        W = decode_ptq1_dev(out_raw[t0 * per:t1 * per]).reshape(t1 - t0, -1)
         parts.append(W @ xf)
     return jnp.concatenate(parts, 0)                       # (VOCAB, B)
+
+
+# The 61-chunk vocab loop above was ~120 host dispatches per token when run
+# eagerly. One jit fuses it into a single dispatched program.
+logits_b = jax.jit(_logits_raw)
 
 
 # %% cell [markdown]
@@ -421,31 +465,26 @@ def run_batch(B, state_dt):
     V = [jnp.zeros((B, T_, HKV, HD), jnp.float32) for _ in AIDX]
     xg = jnp.broadcast_to(embed(int(ids[0])), (B, NEMB))
 
-    def step(x, pos, S, C, K, V):
-        gi = ai = 0
-        for il in range(NL):
-            T, SW = TILES[il], SMALLW[il]
-            if IS_RECR[il]:
-                x, S[gi], C[gi] = gdn_step(
-                    x, T, S[gi], C[gi], SW["attn_norm.weight"],
-                    SW["post_attention_norm.weight"], SW["ssm_beta.weight"],
-                    SW["ssm_alpha.weight"], SW["ssm_a"], SW["ssm_dt.bias"],
-                    SW["ssm_conv1d.weight"], SW["ssm_norm.weight"])
-                gi += 1
-            else:
-                x, K[ai], V[ai] = attn_step(
-                    x, T, K[ai], V[ai], pos, SW["attn_norm.weight"],
-                    SW["post_attention_norm.weight"], SW["attn_q_norm.weight"],
-                    SW["attn_k_norm.weight"])
-                ai += 1
-        return x
-
     t0 = time.perf_counter()
     x = xg
+    S_t, C_t, K_t, V_t = tuple(S), tuple(C), tuple(K), tuple(V)
+    W_t = tuple(a for il in range(NL) for a in (TILES[il], SMALLW[il]))
+    import threading as _th
+    _done = _th.Event()
+
+    def _wd():
+        n = 0
+        while not _done.wait(60):
+            n += 60
+            print(f"    [watchdog] first fused_step still compiling/running ({n}s)...", flush=True)
+    _th.Thread(target=_wd, daemon=True).start()
+    print(f"prefill: {len(ids)} step(s); first call compiles the fused 64-layer step")
     for j, tid in enumerate(ids):              # full prompt prefill, one token per step
         x = jnp.broadcast_to(embed(int(tid)), (B, NEMB))
-        x = step(x, jnp.int32(j), S, C, K, V)  # a 1-token prompt = the old seed path
-    lg = logits_b(x)
+        x, S_t, C_t, K_t, V_t = jitted_step(
+            x, jnp.int32(j), S_t, C_t, K_t, V_t, W_t, B)
+    _done.set()
+    lg = logits_b(x, OUT_RAW)
     cur = np.asarray(jnp.argmax(lg, axis=0))
     first_tok = int(cur[0])                    # captured here: `cur` is reassigned below
     print(f"prefill (compile + {len(ids)} step(s)): {time.perf_counter()-t0:.1f}s")
@@ -461,8 +500,9 @@ def run_batch(B, state_dt):
         for b in range(B):
             gen.append(int(cur[b]))
         x = jnp.broadcast_to(embed(int(cur[0])), (B, NEMB))
-        x = step(x, jnp.int32(len(ids) + i_step), S, C, K, V)
-        cur = np.asarray(jnp.argmax(logits_b(x), axis=0))
+        x, S_t, C_t, K_t, V_t = jitted_step(
+            x, jnp.int32(len(ids) + i_step), S_t, C_t, K_t, V_t, W_t, B)
+        cur = np.asarray(jnp.argmax(logits_b(x, OUT_RAW), axis=0))
     t_gen = time.perf_counter() - t0
     agg = B * N_GEN / t_gen
     sample = tok.decode(gen[::B][:N_GEN])
@@ -495,7 +535,7 @@ def run_batch(B, state_dt):
     path = f"{OUTDIR}/receipt-14-b{B}-{tag}-tc{TC}.json"
     json.dump(rec, open(path, "w"), indent=2)
     print("receipt ->", path)
-    del S, C, K, V, x, xg, lg, cur
+    del S, C, K, V, S_t, C_t, K_t, V_t, x, xg, lg, cur
     gc.collect()
     return rec
 
