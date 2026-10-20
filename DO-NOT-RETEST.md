@@ -300,6 +300,26 @@ tok/s** -- 9.5x the lane-starved baseline. The wall at batch 80 is memory
 | the 50.44 tok/s @ 48.3 % acceptance and the 25.5 tok/s figures that appear in this repo are **[sourced] references from other hardware** -- they are not track results and may not be quoted as this project's throughput | `tpu/TPU-STATUS.md`; `TODO.md` (the GPU items were withdrawn) |
 | the fact that survives: Bonsai 2's GGUFs carry no MTP head, while the base `Qwen/Qwen3.8-27B` does | section 14 |
 
+## 17. The 2x2 projection/attention matrix (2026-10-20) and what it refutes
+
+Every arm ran the real 64-layer model at an 8k window, batch 1, 64 tokens, and
+every arm was numerically exact (first token `271`, identical generated text).
+
+| arm | ms/step | tok/s | receipt |
+| --- | --- | --- | --- |
+| shipped | 159.7 | 6.26 | `14-bonsai-transposed/receipt-14-base-b1-f16-tc1024.json` |
+| `NOCONCAT=1` | 189.2 | 5.28 | `receipt-14-nc-b1-f16-tc1024.json` |
+| `GQA=1` | **134.3** | **7.45** | `receipt-14-gqa-b1-f16-tc1024.json` |
+| both | 163.9 | 6.10 | `receipt-14-both-b1-f16-tc1024.json` |
+
+| Fact | Why it is settled |
+| --- | --- |
+| **the kv-head expansion costs ~25 ms/step at an 8k window** | `K[:, :, _KIDX, :]` is (B, T, 24, 256) -- 201 MB per layer per step, 3.2 GB per step; contracting the query groups against the kv heads directly reads the KV once instead of six times, and saves 25.4 ms |
+| **the concatenation is not the traffic problem** | removing both concatenations made the step **18.5 % slower**: the fourteen groups are 5x16, 5x8 and 4x2 rows, and the MXU pads each to K=128, so 14 x 128 = 1792 K-slots instead of 128 |
+| the unpacked rows of a tile are the **in-dims**, not the out-columns | contracting a 16-row group against the whole (128, QK) x failed with *"contracting dimensions to have the same shape, got (128,) and (16,)"* |
+| the kv head is the same index in both operands of the grouped attention | the first version used `h` for the query group and `h` for the cache and JAX accepted it silently, producing garbage (first token 220, output `" 3 3 3 ..."`); the corrected form uses `h` in both, with the query head index `h*G + g`, the same order as the expanded `_KIDX` path |
+| **do not re-run the "it is the VMEM traffic" theory** | the one experiment that could have tested it says the opposite |
+
 ## 13. Corrections to claims made on this track
 
 - *"The decode step scales with MAX_T, not only with the batch"* (in
@@ -331,4 +351,4 @@ tok/s** -- 9.5x the lane-starved baseline. The wall at batch 80 is memory
 | **do not** spend a session on this lever without a new reason | - |
 
 MIT OR Apache-2.0
-updated: 2026-10-20 20:40 UTC
+updated: 2026-10-20 23:30 UTC
