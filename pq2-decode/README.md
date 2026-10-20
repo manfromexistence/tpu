@@ -51,5 +51,72 @@ TQ2_0 decode: the C loop, the vectorised form and the four-plane split agree on
 This is `TODO.md` item **TPU-08**; the 1M-context arithmetic is in
 `HELP.md` section 4.
 
+## The port, step by step
+
+Written before the code, so the next session executes rather than re-derives.
+
+### 1. The tile layout changes shape
+
+| | PTQ1_0 (shipped) | PQ2_0 |
+| --- | --- | --- |
+| values per byte-row | 128 | 256 |
+| bytes per byte-row | 28 (+4 pad = 32) | 84 (+4 pad = 88) |
+| padding overhead | +14 % | **+4.8 %** |
+| in-dim order inside a row | 5 power groups: 80 + 40 + 8 | 2 chunks × 4 planes × 32 bytes |
+
+The Pallas block dimension must be a multiple of 8, so a byte-row is padded from
+84 to 88 (28 → 32 today). The 256 in-dims of one row are laid out
+`(chunk, plane, byte)`: plane `p` of chunk `c` occupies in-dims
+`c*128 + p*32 .. c*128 + p*32 + 31`.
+
+### 2. The decode becomes four planes, and the planes are strided
+
+The PTQ1_0 decode produces five power groups and **concatenates** them into one
+(128, TC) block, because the power is a property of the row. The 2-bit decode
+produces four planes with **no row dependence**, but each plane is strided by 32
+in the in-dim axis, so a plane is not contiguous in the output.
+
+Two ways to make a plane contiguous, and the choice matters:
+
+* **permute the basis** (host-side, once): the weight rows are permuted so a
+  plane is contiguous, and the activation's transform is permuted to match --
+  the Hadamard basis `R` and the sign vector `ROW` are both permuted by the same
+  permutation. The four planes then become four contiguous `(rows, TC)` blocks
+  and the kernel does four matmuls with no concatenation at all.
+* **keep the strided order** and let the MXU read the strided operand: possible,
+  but the operand is then not a clean `(rows, TC)` block and the packing
+  discipline Pallas wants is lost.
+
+The first is the plan: it is host-side work (a permutation in the tile build
+plus a permuted `R`/`ROW`), and it makes the kernel path *simpler* than
+today's.
+
+### 3. The reader change
+
+The staging module (`colab_run/04-bonsai-tpu-forward.py`, uploaded as
+`/content/04.py`) reads the GGUF and stages the raw weight blocks. For PQ2_0 it
+must stage the 84-byte super-blocks instead of the 28-byte PTQ1_0 blocks; the
+tensor list and the `prism.hadamard.*` metadata are identical, so the change is
+local to the block reader. The kernel's `build_layer` then transposes the
+super-blocks into the `(88, rows)` tile with the permuted row order.
+
+### 4. What has to be true when it lands
+
+* the correctness gate is unchanged: first token `11` for the prompt `Hello`,
+  `271` for the 17-token prompt, and the generated text byte-identical to
+  `receipt-14-b1-f16-tc1024-fused.json`;
+* `unfold(fold(z))` still round-trips (`kernel.py` prints `max|R@R - I| = 0.0`);
+* the step time at 8k / batch 1 is below the PTQ1_0 number, and the receipts
+  record `proj_format: pq2_0` so the two are never compared without saying which
+  is which.
+
+### 5. The price, again, because it is the only thing that can sink this
+
+1.4 GB more on device: the tiles go from 6.37 GiB to ~7.8 GiB, which drops the
+fp32-KV context ceiling from ~45k to ~38k tokens. The int8 MXU path (which
+halves the unpacked traffic, and is the only way to approach the HBM floor)
+additionally needs int8 activations -- a precision change, so it needs its own
+validation against the gate.
+
 MIT OR Apache-2.0
-updated: 2026-10-20 23:20 UTC
+updated: 2026-10-20 23:25 UTC
