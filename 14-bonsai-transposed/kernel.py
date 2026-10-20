@@ -150,22 +150,40 @@ def _kernel(x_ref, rep_ref, sc_ref, z_ref, acc_ref, *, nsteps):
     qh = b[24:26].astype(jnp.int16)      # (2, TC)
     # NOT `jnp.stack(...)`: notebook 13 measured stack+reshape at 3.129 ms
     # against concatenate at 1.872 ms for identical trits (a layout conversion).
-    t80 = jnp.concatenate([_d(qs[:16], p) for p in POW3], 0)      # (80, TC)
-    t40 = jnp.concatenate([_d(qs[16:], p) for p in POW3], 0)      # (40, TC)
-    h8 = jnp.concatenate([
-        jnp.concatenate([_d(qh[:1], p), _d(qh[1:], p)], 0)
-        for p in QH3], 0)                                          # (8, TC)
-    w = (jnp.concatenate([t80, t40, h8], 0) - 1).astype(jnp.bfloat16) \
-        * sc_ref[...][None, :]                                     # (128, TC)
+    # The fourteen power groups, kept separate so that the concatenations can be
+    # skipped: 5 x (16, TC) from qs[:16], 5 x (8, TC) from qs[16:], 4 x (2, TC)
+    # from qh.  The two concatenations are full read+write passes over the
+    # unpacked weights -- the largest single term in the projection's memory
+    # traffic -- and at batch 1 the MXU is ~99 % idle, so skipping them costs no
+    # measurable arithmetic.  It is a batch-1 optimisation: at large batch the
+    # 8x padding of the K dimension is real work.
+    g80 = [_d(qs[:16], p) for p in POW3]                           # (16, TC) x 5
+    g40 = [_d(qs[16:], p) for p in POW3]                           # (8, TC) x 5
+    gh = [jnp.concatenate([_d(qh[:1], p), _d(qh[1:], p)], 0)
+          for p in QH3]                                            # (2, TC) x 4
     @pl.when(pl.program_id(2) == 0)
     def _z():
         acc_ref[...] = jnp.zeros_like(acc_ref)
+    sc = sc_ref[...][None, :]                                      # (1, TC)
     # (B, QK) @ (QK, TC) -> (B, TC): the orientation the Pallas matmul tutorial
     # uses and the one Mosaic's RHS-on-lanes rule packs for.
-    acc_ref[...] += jax.lax.dot_general(
-        x_ref[...], w, (((1,), (0,)), ((), ())),
-        precision=jax.lax.Precision.DEFAULT,
-        preferred_element_type=jnp.float32)
+    if NOCONCAT:
+        for g in g80 + g40 + gh:
+            wg = (g - 1).astype(jnp.bfloat16) * sc                 # (rows, TC)
+            acc_ref[...] += jax.lax.dot_general(
+                x_ref[...], wg, (((1,), (0,)), ((), ())),
+                precision=jax.lax.Precision.DEFAULT,
+                preferred_element_type=jnp.float32)
+    else:
+        t80 = jnp.concatenate(g80, 0)                              # (80, TC)
+        t40 = jnp.concatenate(g40, 0)                              # (40, TC)
+        h8 = jnp.concatenate(gh, 0)                                # (8, TC)
+        w = (jnp.concatenate([t80, t40, h8], 0) - 1).astype(jnp.bfloat16) \
+            * sc                                                  # (128, TC)
+        acc_ref[...] += jax.lax.dot_general(
+            x_ref[...], w, (((1,), (0,)), ((), ())),
+            precision=jax.lax.Precision.DEFAULT,
+            preferred_element_type=jnp.float32)
 
     @pl.when(pl.program_id(2) == nsteps - 1)
     def _s():
@@ -173,6 +191,7 @@ def _kernel(x_ref, rep_ref, sc_ref, z_ref, acc_ref, *, nsteps):
 
 
 PREFETCH = int(os.environ.get("PREFETCH", "0"))
+NOCONCAT = os.environ.get("NOCONCAT", "0") == "1"
 
 
 def _pallas(geom, B):
@@ -585,6 +604,7 @@ def run_batch(B, state_dt):
         "cache_pallas_callable": CACHE,
         "proj_fusion": "on" if FUSE else "off",
         "num_scalar_prefetch": PREFETCH,
+        "no_concat": "on" if NOCONCAT else "off",
         "projections_per_step": (4 * NL) if FUSE else (6 * len(GIDX) + 7 * len(AIDX)),
         "weights": "PTQ1_0 consumed as packed bytes, in-kernel unpack",
         "layout": f"transposed ({RW}, rows); lanes = out-columns; x @ w",

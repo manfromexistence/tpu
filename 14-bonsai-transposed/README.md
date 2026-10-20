@@ -96,6 +96,19 @@ What each knob was worth, holding the rest fixed:
 Run-to-run spread on the best config: 279.46 vs 281.01 in the same process,
 0.5 %.
 
+## The concatenation pass (experiment queued 2026-10-20)
+
+The unpack produces fourteen power groups (5 x (16, TC) from `qs[:16]`, 5 x (8, TC) from
+`qs[16:]`, 4 x (2, TC) from `qh`). The shipped path concatenates them twice -- into
+(80, TC) and then (128, TC) -- and each concatenation is a full read+write pass over the
+unpacked weights, which is the largest single term in the projection's memory traffic
+(~25x the packed tile bytes per tile). `NOCONCAT=1` serves the fourteen groups with
+fourteen separate matmuls instead, skipping both concatenations; at batch 1 the MXU is
+~99 % idle, so the smaller K dimension costs no measurable arithmetic. The A/B
+(`NOCONCAT=0` against `NOCONCAT=1`, 8k window, batch 1) is queued on a TPU session; its
+receipts land as `receipt-14-nc0-b1-f16-tc1024.json` and
+`receipt-14-nc1-b1-f16-tc1024.json`.
+
 ## The fused step (2026-10-19)
 
 `full_step` runs all 64 layers inside **one** `jax.jit`, and the 61-chunk vocab
@@ -175,4 +188,4 @@ and batch 32 / 460 generated at `max_t` 512 measured 48.3 tok/s
 (`receipt-14-essay-b32-f16-tc1024.json`).
 
 MIT OR Apache-2.0
-updated: 2026-10-20 21:10 UTC
+updated: 2026-10-20 21:20 UTC

@@ -1,6 +1,6 @@
 {
   "id": "essencefromexistence/bonsai2-spec-2gpu",
-  "title": "Bonsai2 Spec Draft 2xT4",
+  "title": "Bonsai2 Spec 2gpu",
   "code_file": "notebook.ipynb",
   "language": "python",
   "kernel_type": "notebook",
