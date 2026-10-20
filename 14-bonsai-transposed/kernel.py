@@ -192,6 +192,13 @@ def _kernel(x_ref, rep_ref, sc_ref, z_ref, acc_ref, *, nsteps):
 
 PREFETCH = int(os.environ.get("PREFETCH", "0"))
 NOCONCAT = os.environ.get("NOCONCAT", "0") == "1"
+# GQA=1 computes the attention without materialising the expanded K and V. The
+# shipped path builds K[:, :, _KIDX, :] -- (B, T, 24, 256) -- which at an 8k
+# window is 201 MB per layer per step, 3.2 GB per step, and that expansion is
+# the bulk of the 29 ms the 8k window costs at batch 1. The grouped form
+# contracts the 24 query heads against the 4 kv heads directly, so the KV tiles
+# are read once instead of six times.
+GQA = os.environ.get("GQA", "0") == "1"
 
 
 def _pallas(geom, B):
@@ -437,13 +444,13 @@ def attn_core(h, T, SW, K, V, pos, B=None):
             * _ISS
         allow = jnp.arange(K.shape[1]) <= pos
         scores = jnp.where(allow[None, None, :], scores, -1e30)
-        p = jnp.nn.softmax(scores, -1).reshape(B, HKV, G, K.shape[1])
+        p = jax.nn.softmax(scores, -1).reshape(B, HKV, G, K.shape[1])
         o = jnp.einsum("bkgt,bthd->bkgd", p, V).reshape(B, H, HD)
     else:
         scores = jnp.einsum("bhd,bthd->bht", q, K[:, :, _KIDX, :]) * _ISS
         allow = jnp.arange(K.shape[1]) <= pos
         scores = jnp.where(allow[None, None, :], scores, -1e30)
-        p = jnp.nn.softmax(scores, -1)
+        p = jax.nn.softmax(scores, -1)
         o = jnp.einsum("bht,bthd->bhd", p, V[:, :, _KIDX, :])
     o = o * jax.nn.sigmoid(g)
     return proj(fold_b(o.reshape(B, -1), SIGNS[H * HD]), T["attn_output.weight"],
