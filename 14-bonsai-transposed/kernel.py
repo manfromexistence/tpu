@@ -220,6 +220,16 @@ NOCONCAT = os.environ.get("NOCONCAT", "0") == "1"
 # contracts the 24 query heads against the 4 kv heads directly, so the KV tiles
 # are read once instead of six times.
 GQA = os.environ.get("GQA", "0") == "1"
+# The KV cache dtype. fp32 is 128 KiB/token/sequence (16 attention layers x 4 kv
+# heads x 256 dims x K and V x 4 bytes) and is what set the measured 45k
+# ceiling; fp16 halves it. The attention casts the *query* to the cache dtype
+# so the matmul runs in the cache's precision and no full-size f32 upcast of
+# the cache is materialised -- that temporary would eat the whole saving. A
+# true 4-bit cache needs the dequant fused into the attention (a flash-style
+# Pallas kernel): a 4-bit cache read through an f32 einsum is upcast straight
+# back to 32 bits per element and wins nothing.
+KVDTYPE = os.environ.get("KVDTYPE", "float32")
+assert KVDTYPE in ("float32", "float16", "bfloat16"), KVDTYPE
 
 
 def _pallas(geom, B):
@@ -453,8 +463,8 @@ def attn_core(h, T, SW, K, V, pos, B=None):
     q = rms(q, SW["attn_q_norm.weight"], EPS)
     k = kk
     q, k = rope(q, pos), rope(k, pos)
-    K = jax.lax.dynamic_update_slice(K, k[:, None], (0, pos, 0, 0))
-    V = jax.lax.dynamic_update_slice(V, v[:, None], (0, pos, 0, 0))
+    K = jax.lax.dynamic_update_slice(K, k[:, None].astype(K.dtype), (0, pos, 0, 0))
+    V = jax.lax.dynamic_update_slice(V, v[:, None].astype(V.dtype), (0, pos, 0, 0))
     if GQA:
         # (B, HKV, G, HD) x (B, T, HKV, HD) -> (B, HKV, G, T): the 6 query
         # heads that share a kv head contract against it directly, so the KV
@@ -465,18 +475,19 @@ def attn_core(h, T, SW, K, V, pos, B=None):
         # and the query's kv head is the middle axis of (B, HKV, G, HD). The
         # query head index is h*G + g, which is the order the expanded
         # _KIDX path uses, so the two are equivalent.
-        scores = jnp.einsum("bhgd,bthd->bhgt", qr, K).reshape(B, H, K.shape[1]) \
-            * _ISS
+        scores = jnp.einsum("bhgd,bthd->bhgt", qr.astype(K.dtype), K) \
+            .reshape(B, H, K.shape[1]).astype(jnp.float32) * _ISS
         allow = jnp.arange(K.shape[1]) <= pos
         scores = jnp.where(allow[None, None, :], scores, -1e30)
         p = jax.nn.softmax(scores, -1).reshape(B, HKV, G, K.shape[1])
-        o = jnp.einsum("bhgt,bthd->bhgd", p, V).reshape(B, H, HD)
+        o = jnp.einsum("bhgt,bthd->bhgd", p, V.astype(p.dtype)).reshape(B, H, HD)
     else:
-        scores = jnp.einsum("bhd,bthd->bht", q, K[:, :, _KIDX, :]) * _ISS
+        scores = jnp.einsum("bhd,bthd->bht", q.astype(K.dtype),
+                             K[:, :, _KIDX, :]).astype(jnp.float32) * _ISS
         allow = jnp.arange(K.shape[1]) <= pos
         scores = jnp.where(allow[None, None, :], scores, -1e30)
         p = jax.nn.softmax(scores, -1)
-        o = jnp.einsum("bht,bthd->bhd", p, V[:, :, _KIDX, :])
+        o = jnp.einsum("bht,bthd->bhd", p, V[:, :, _KIDX, :].astype(p.dtype))
     o = o * jax.nn.sigmoid(g)
     return proj(fold_b(o.reshape(B, -1), SIGNS[H * HD]), T["attn_output.weight"],
                 "attn_output.weight", B), K, V
@@ -587,8 +598,10 @@ def run_batch(B, state_dt):
           f"limit {st['bytes_limit']/2**30:.2f} GiB")
     S = [jnp.zeros((B, ST, ST, NV), np.dtype(state_dt)) for _ in GIDX]
     C = [jnp.zeros((B, CONV - 1, CONV_DIM), jnp.float32) for _ in GIDX]
-    K = [jnp.zeros((B, T_, HKV, HD), jnp.float32) for _ in AIDX]
-    V = [jnp.zeros((B, T_, HKV, HD), jnp.float32) for _ in AIDX]
+    kv_dt = {"float32": jnp.float32, "float16": jnp.float16,
+             "bfloat16": jnp.bfloat16}[KVDTYPE]
+    K = [jnp.zeros((B, T_, HKV, HD), kv_dt) for _ in AIDX]
+    V = [jnp.zeros((B, T_, HKV, HD), kv_dt) for _ in AIDX]
     xg = jnp.broadcast_to(embed(int(ids[0])), (B, NEMB))
 
     t0 = time.perf_counter()
@@ -651,6 +664,7 @@ def run_batch(B, state_dt):
         "num_scalar_prefetch": PREFETCH,
         "no_concat": "on" if NOCONCAT else "off",
         "gqa_attention": "on" if GQA else "off",
+        "kv_cache_dtype": KVDTYPE,
         "projections_per_step": (4 * NL) if FUSE else (6 * len(GIDX) + 7 * len(AIDX)),
         "weights": "PTQ1_0 consumed as packed bytes, in-kernel unpack",
         "layout": f"transposed ({RW}, rows); lanes = out-columns; x @ w",
