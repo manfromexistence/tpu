@@ -291,6 +291,15 @@ tok/s** -- 9.5x the lane-starved baseline. The wall at batch 80 is memory
 | the 120 s auth timeout patch is still required for the re-auth flow itself | `env/colab_timeout_patch.py`, `env/zz_colab_timeout.pth` |
 | **after any session re-create the GGUF is gone** (5.54 GiB, `/content/gguf/`) -- re-download before the next run, or the kernel opens a file that is not there | run logs 2026-10-19 |
 
+## 16. Scope: this track is TPU-only, and the Kaggle GPU numbers are references, not results
+
+| Fact | Evidence |
+| --- | --- |
+| **Decision (2026-10-20):** the project runs Bonsai 2 27B -- and other good models -- **on TPU silicon, at maximum speed**. A GPU measurement answers a different question, does not move the TPU kernel, and is not a result of this track | `AGENTS.md` section 2 rule 7; `tpu/README.md` section 6 |
+| the four Kaggle GPU kernels this track had queued (MTP-head test, draft-model + n-gram, 2xT4, MTP graft) were **deleted**; Kaggle's API has no cancel, so deletion was the only way to stop them. Their source stays in this repo and the facts they produced are cited below | 2026-10-20 |
+| the 50.44 tok/s @ 48.3 % acceptance and the 25.5 tok/s figures that appear in this repo are **[sourced] references from other hardware** -- they are not track results and may not be quoted as this project's throughput | `tpu/TPU-STATUS.md`; `TODO.md` (the GPU items were withdrawn) |
+| the fact that survives: Bonsai 2's GGUFs carry no MTP head, while the base `Qwen/Qwen3.8-27B` does | section 14 |
+
 ## 13. Corrections to claims made on this track
 
 - *"The decode step scales with MAX_T, not only with the batch"* (in
@@ -322,4 +331,4 @@ tok/s** -- 9.5x the lane-starved baseline. The wall at batch 80 is memory
 | **do not** spend a session on this lever without a new reason | - |
 
 MIT OR Apache-2.0
-updated: 2026-10-20 20:10 UTC
+updated: 2026-10-20 20:40 UTC

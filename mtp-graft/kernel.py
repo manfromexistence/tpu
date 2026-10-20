@@ -1,4 +1,9 @@
-"""Build a kernel that grafts the base model's MTP head into Bonsai 2 and runs it.
+"""OUT OF SCOPE for the TPU track as of 2026-10-20: this is a GPU (Kaggle T4)
+kernel. It is kept for the record and its numbers are [sourced] references,
+not results of this project -- see tpu/README.md section 6 and AGENTS.md
+section 2 rule 7. Do not run it without the user's explicit go-ahead.
+
+Build a kernel that grafts the base model's MTP head into Bonsai 2 and runs it.
 
 Two routes are tried, because the fork may support either:
 

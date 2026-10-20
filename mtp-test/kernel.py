@@ -1,4 +1,9 @@
-"""Try Qwen3.8-27B's built-in MTP head on the Bonsai 2 27B GGUF.
+"""OUT OF SCOPE for the TPU track as of 2026-10-20: this is a GPU (Kaggle T4)
+kernel. It is kept for the record and its numbers are [sourced] references,
+not results of this project -- see tpu/README.md section 6 and AGENTS.md
+section 2 rule 7. Do not run it without the user's explicit go-ahead.
+
+Try Qwen3.8-27B's built-in MTP head on the Bonsai 2 27B GGUF.
 
 The claim being tested: `--spec-type draft-mtp --spec-draft-n-max 8` gives 50.44 tok/s
 at 48.3% acceptance on a reference Qwen3.8-27B GGUF. That flag uses the model's OWN

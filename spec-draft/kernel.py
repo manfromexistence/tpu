@@ -1,4 +1,9 @@
-"""Test Qwen3.5-0.8B (Q4_0) as a speculative draft for Bonsai 2 27B on a Kaggle T4.
+"""OUT OF SCOPE for the TPU track as of 2026-10-20: this is a GPU (Kaggle T4)
+kernel. It is kept for the record and its numbers are [sourced] references,
+not results of this project -- see tpu/README.md section 6 and AGENTS.md
+section 2 rule 7. Do not run it without the user's explicit go-ahead.
+
+Test Qwen3.5-0.8B (Q4_0) as a speculative draft for Bonsai 2 27B on a Kaggle T4.
 
 The question this answers, and only this: does the draft pair load, and what does it cost
 per token? Two outcomes, both informative:

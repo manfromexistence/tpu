@@ -49,34 +49,35 @@ to TC 512 (1.21x) and int16 decode width (1.20x) — `DO-NOT-RETEST.md` §7.
 | nb 14, batch 32, f16 state, TC 512 | 134.67 | `14-bonsai-transposed/receipt-14-b32-f16-tc512.json` |
 | nb 14, batch 32, f32 state, TC 512 (lane flip alone) | 130.30 | `14-bonsai-transposed/receipt-14-b32-f32-tc512.json` |
 
-## The 50 tok/s target: where the route actually is (2026-10-20)
+## The 50 tok/s target is a TPU target (2026-10-20)
 
-**The target is 50 tok/s for a single stream on an 8k window.** Four measured
-facts decide the route:
+**Scope first:** this track is TPU-only. A GPU number is not a result of this project
+(`AGENTS.md` section 2 rule 7, `tpu/README.md` section 6). The goal is **this TPU
+kernel** at 50 tok/s for one stream on an 8k window, and the state of it is:
 
 | fact | value | receipt |
 | --- | --- | --- |
-| one stream, 8k window | 180.6 ms/step | `14-bonsai-transposed/receipt-14-b1-f16-tc1024-fused.json` |
-| 80 streams, 64-token window | 284.7 ms/step | `14-bonsai-transposed/receipt-14-b80-f16-tc1024.json` |
-| weight-traffic floor | 6.37 GiB / 709 GB/s = 9.0 ms | `13-cost-sweep/README.md:28` |
-| projections launched per step | ~400 (48 GDN x 6 + 16 attn x 7) | `14-bonsai-transposed/kernel.py` |
+| one stream, 8k window, the 64-layer step fused into one jit | **5.52 tok/s** (181.3 ms/step) | `14-bonsai-transposed/receipt-14-fuse1-b1-f16-tc1024.json` |
+| 80 streams, 64-token window | 284.7 ms/step (281.01 tok/s aggregate) | `14-bonsai-transposed/receipt-14-b80-f16-tc1024.json` |
+| weight-traffic floor on this slice | 6.37 GiB / 709 GB/s = **9.0 ms** | `13-cost-sweep/README.md:28` |
+| the step is ~20x off that floor, and the unpack is 82 % of a projection | — | `DO-NOT-RETEST.md` section 10 |
+| kernel launches are **not** the cost: 36 % fewer launches moved the step 0.5 % | — | `DO-NOT-RETEST.md` section 10 |
 
-80 sequences cost 1.58x one sequence, so the TPU step is **~85 % per-projection
-launch overhead**, not bandwidth. 50 tok/s is 20 ms/step, which is 2.2x the
-traffic floor: reachable on this hardware only if that fixed cost is amortised
-over several tokens, which is a multi-token verification pass, not tuning.
+**So the two real routes to 50 tok/s here are:**
 
-**The route with a number attached to it is MTP speculative decoding, and the
-cheapest proof of it is a GPU run.** llama.cpp's `--spec-type draft-mtp
---spec-draft-n-max 8` gave **50.44 tok/s at 48.3 % acceptance** on the
-reference Qwen3.8-27B GGUF, and the same 27B dense model on the same Kaggle T4
-with no draft gave **25.5 tok/s** (`mtp-test/kernel.py:3-4`,
-`spec-draft/kernel.py:8-9`). The draft is the checkpoint's own multi-token
-prediction head, so nothing new is downloaded. The open question is whether
-PrismML's PTQ1_0 quantization kept that head at all.
+1. **`TPU-07` — make the ternary unpack ~9x faster.** The step is bound by VPU data
+   movement, not by HBM bandwidth, not by launch count and not by instruction count
+   (all four ruled out by measurement). A formulation that never materialises the
+   unpacked weights -- folding the per-dimension power pattern into the activation so
+   the kernel only widens 2-bit values -- is the unexplored direction, and it is the
+   one that moves the number.
+2. **`TPU-03` — multi-token verification**, which amortises the unpack over several
+   tokens. Its ceiling with a realistic draft is ~10-15 tok/s (a 200 ms pass would
+   need 9-10 accepted tokens per pass), so on its own it is not enough.
 
-Open work, each with its evidence and a `Done when` check, is in the
-repository ledger: `TODO.md` `GPU-01`...`GPU-03` and `TPU-01`...`TPU-06`.
+**What is deliberately not claimed:** the 50.44 tok/s and 25.5 tok/s figures that
+circulate from other hardware are `[sourced]` references, not track results, and they
+are not used to plan the TPU work.
 
 ## Result (2026-10-17, first TPU run of this model)
 
@@ -300,4 +301,4 @@ notebook 14 and both paid**:
    receipts in `14-bonsai-transposed/`.
 
 MIT OR Apache-2.0
-updated: 2026-10-20 13:08 UTC
+updated: 2026-10-20 20:45 UTC

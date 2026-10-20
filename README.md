@@ -52,9 +52,9 @@ or the web console; do not quote these numbers as current.
 | `01-tpu-env-probe/` | Draft TPU kernel: JAX devices, Pallas check, FWHT-1024 timing |
 | `02-gguf-prism-metadata/` | Draft TPU kernel: GGUF `prism.hadamard.*` fork reader |
 | `03-fwht-kernel-test/` | Draft kernel: signed-FWHT NumPy reference + tests (CPU passes) |
-| `bonsai2-27b-t4/` | Shipped T4 kernel, 2xT4 config, 7.5 tok/s `[exec]` |
+| `bonsai2-27b-t4/` | Historical **GPU** kernel, 2xT4, 7.5 tok/s `[exec]` -- **out of scope since 2026-10-20**, kept for the record |
 | `bonsai2-4way/` | Shipped 4-model comparison kernel `[exec]` |
-| `bonsai2-kernel/` … `mtp-test/` | Earlier kernel generations, kept for history |
+| `bonsai2-kernel/` … `mtp-test/` | Earlier kernel generations, kept for history. `mtp-test/`, `spec-draft/`, `spec-draft-2gpu/` and `mtp-graft/` are **GPU** kernels: **out of scope since 2026-10-20**, kept for the record |
 | `dq-cli/` | `dq` download/engine CLI source (Rust) |
 | `bin/` | Local build outputs only, never committed |
 
@@ -129,6 +129,18 @@ then every FWHT test uses random signs and says so.
   number is in the log -- never instead of it. This rule outranks any plan
   elsewhere in this folder that says to benchmark first. See
   `DO-NOT-RETEST.md` §0.
+- **TPU only.** Every result this folder reports is a TPU result. A GPU run (Kaggle
+  T4, any CUDA host) is **not** a result of this folder, may not be quoted as this
+  folder's throughput, and may not be used to decide what the TPU work does next.
+  An agent needs the user's explicit go-ahead before starting any GPU run; a GPU is
+  otherwise allowed only as a *correctness oracle* (llama.cpp's text as a
+  cross-check), and then it is labelled as an oracle, never as a speed claim.
+  Rationale, measured: llama.cpp has no TPU backend, so a GPU run cannot inform the
+  TPU kernel, and the TPU's own bottleneck is the per-weight-byte ternary unpack
+  (`DO-NOT-RETEST.md` section 10) -- a GPU number does not move it.
+  **The Kaggle GPU kernels under this folder are out of scope since 2026-10-20 and
+  are kept only for the record: `bonsai2-27b-t4/`, `mtp-test/`, `spec-draft/`,
+  `spec-draft-2gpu/`, `mtp-graft/`. Do not run them.**
 - Never commit `env.ps1`, tokens, cookies, or service-account keys.
   `.gitignore` already excludes `/tpu/env.ps1`; keep it that way.
 - Never paste a secret into a kernel, notebook, log, or chat quote.
@@ -137,4 +149,4 @@ then every FWHT test uses random signs and says so.
 - Do not delete build outputs or caches to free space; report instead.
 
 MIT OR Apache-2.0
-updated: 2026-10-18 05:45 UTC
+updated: 2026-10-20 20:40 UTC
