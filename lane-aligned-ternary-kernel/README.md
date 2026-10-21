@@ -96,6 +96,48 @@ What each knob was worth, holding the rest fixed:
 Run-to-run spread on the best config: 279.46 vs 281.01 in the same process,
 0.5 %.
 
+## The decode fold (implemented 2026-10-21, not yet measured)
+
+`FOLD=1` moves two operations off the per-weight path, and with them the tile's
+element width.
+
+The shipped line is
+
+```python
+w = (jnp.concatenate([t80, t40, h8], 0) - 1).astype(jnp.bfloat16) * sc
+```
+
+Two things about it:
+
+- `.astype(bfloat16) * sc` promotes **back to fp32** — the cast and the
+  multiply are one expression — so the MXU is fed a **4-byte-per-element**
+  weight tile where it needs 2. The tile is the largest single term in the
+  projection's memory traffic by this kernel's own comment, so it is carried at
+  twice the width it needs.
+- The `- 1` and the `* sc` are two more full passes over that tile, and
+  neither of them belongs there: the scale is **per out-column**, so it belongs
+  on the accumulator, and the `- 1` is a constant offset, so
+  `sum_in (level-1)*x = sum_in level*x - sum_in x` and `sum_in x` is **one
+  scalar per token**.
+
+The fold leaves the level in bf16 (0, 1 and 2 are exact in bf16), applies the
+scale to the fp32 accumulator after the matmul, and subtracts the per-token
+`sum_in x` inside the kernel -- so the cancellation happens at full precision
+and only the result is rounded to bf16, the same rounding the shipped path
+ends with.
+
+**Executed on CPU:** `fold_test.py` reproduces the kernel's decode spelling
+and compares the two projections -- worst relative difference **2.3e-07**, fp32
+rounding. Run: `python fold_test.py`.
+
+**Not yet measured on the TPU.** `FOLD` defaults to **0**, so the shipped path
+is unchanged until a receipt says otherwise. The gate is the first token
+(still `271`); and because the shipped path hands the MXU a bf16 rounding of
+`(level-1)*sc` while the fold keeps the scale in fp32, the fold is the *more*
+accurate of the two and the two may not agree bit for bit. If the greedy text
+changes, the comparison against `../reference-forward-pass/` decides which is
+right. See `TODO.md` `TPU-11`.
+
 ## The concatenation pass (experiment queued 2026-10-20)
 
 The unpack produces fourteen power groups (5 x (16, TC) from `qs[:16]`, 5 x (8, TC) from
@@ -188,4 +230,4 @@ and batch 32 / 460 generated at `max_t` 512 measured 48.3 tok/s
 (`receipt-essay-b32-f16-tc1024.json`).
 
 MIT OR Apache-2.0
-updated: 2026-10-20 21:20 UTC
+updated: 2026-10-21 12:35 UTC

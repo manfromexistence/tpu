@@ -142,7 +142,7 @@ def _d(q, p):
     return (((q * p) & 0xFF) * 3) >> 8
 
 
-def _kernel(x_ref, rep_ref, sc_ref, z_ref, acc_ref, *, nsteps):
+def _kernel(x_ref, rep_ref, sc_ref, xs_ref, z_ref, acc_ref, *, nsteps):
     b = rep_ref[...]                     # (32, TC) uint8, lanes = out-columns
     # int16, not int32: max `q*p` is 255*81 = 20655 and `& 255` -> `*3` -> `>> 8`
     # only decreases it. Notebook 13: 1.866 ms int32 against 1.393 ms int16.
@@ -165,6 +165,21 @@ def _kernel(x_ref, rep_ref, sc_ref, z_ref, acc_ref, *, nsteps):
     def _z():
         acc_ref[...] = jnp.zeros_like(acc_ref)
     sc = sc_ref[...][None, :]                                      # (1, TC)
+    # FOLD=1 moves the trit decode's `- 1` and `* sc` off the per-weight path.
+    # The decode yields a level in {0,1,2}; the shipped weight is level-1, so
+    #     sum_in (level-1) * x * sc = sc * (sum_in level * x - sum_in x)
+    # and `sum_in x` is ONE scalar per token, not one operation per weight.
+    # The scale is per out-column, so it belongs on the accumulator. Both are
+    # folded in fp32 *inside* the kernel: the accumulator is fp32 and the
+    # output is bf16, so the cancellation happens at full precision and only
+    # the corrected result is rounded.
+    xs = xs_ref[...]                                               # (B,)
+    if FOLD:
+        def _w(g):
+            return g.astype(jnp.bfloat16)
+    else:
+        def _w(g):
+            return (g - 1).astype(jnp.bfloat16) * sc
     # (B, QK) @ (QK, TC) -> (B, TC): the orientation the Pallas matmul tutorial
     # uses and the one Mosaic's RHS-on-lanes rule packs for.
     if NOCONCAT:
@@ -176,21 +191,21 @@ def _kernel(x_ref, rep_ref, sc_ref, z_ref, acc_ref, *, nsteps):
         xr = x_ref[...]
         for p in range(5):
             a = p * 16
-            wg = (g80[p] - 1).astype(jnp.bfloat16) * sc              # (16, TC)
+            wg = _w(g80[p])                                        # (16, TC)
             acc_ref[...] += jax.lax.dot_general(
                 xr[:, a:a + 16], wg, (((1,), (0,)), ((), ())),
                 precision=jax.lax.Precision.DEFAULT,
                 preferred_element_type=jnp.float32)
         for p in range(5):
             a = 80 + p * 8
-            wg = (g40[p] - 1).astype(jnp.bfloat16) * sc              # (8, TC)
+            wg = _w(g40[p])                                        # (8, TC)
             acc_ref[...] += jax.lax.dot_general(
                 xr[:, a:a + 8], wg, (((1,), (0,)), ((), ())),
                 precision=jax.lax.Precision.DEFAULT,
                 preferred_element_type=jnp.float32)
         for p in range(4):
             a = 120 + p * 2
-            wg = (gh[p] - 1).astype(jnp.bfloat16) * sc               # (2, TC)
+            wg = _w(gh[p])                                         # (2, TC)
             acc_ref[...] += jax.lax.dot_general(
                 xr[:, a:a + 2], wg, (((1,), (0,)), ((), ())),
                 precision=jax.lax.Precision.DEFAULT,
@@ -199,8 +214,7 @@ def _kernel(x_ref, rep_ref, sc_ref, z_ref, acc_ref, *, nsteps):
         t80 = jnp.concatenate(g80, 0)                              # (80, TC)
         t40 = jnp.concatenate(g40, 0)                              # (40, TC)
         h8 = jnp.concatenate(gh, 0)                                # (8, TC)
-        w = (jnp.concatenate([t80, t40, h8], 0) - 1).astype(jnp.bfloat16) \
-            * sc                                                  # (128, TC)
+        w = _w(jnp.concatenate([t80, t40, h8], 0))                 # (128, TC)
         acc_ref[...] += jax.lax.dot_general(
             x_ref[...], w, (((1,), (0,)), ((), ())),
             precision=jax.lax.Precision.DEFAULT,
@@ -208,7 +222,12 @@ def _kernel(x_ref, rep_ref, sc_ref, z_ref, acc_ref, *, nsteps):
 
     @pl.when(pl.program_id(2) == nsteps - 1)
     def _s():
-        z_ref[...] = acc_ref[...].astype(z_ref.dtype)
+        if FOLD:
+            # the fp32 accumulator minus the per-token sum of x, then the
+            # per-out-column scale: both outside the per-weight path
+            z_ref[...] = ((acc_ref[...] - xs[:, None]) * sc).astype(z_ref.dtype)
+        else:
+            z_ref[...] = acc_ref[...].astype(z_ref.dtype)
 
 
 PREFETCH = int(os.environ.get("PREFETCH", "0"))
@@ -231,6 +250,19 @@ GQA = os.environ.get("GQA", "0") == "1"
 KVDTYPE = os.environ.get("KVDTYPE", "float32")
 assert KVDTYPE in ("float32", "float16", "bfloat16"), KVDTYPE
 
+# FOLD=1 moves the trit decode's `- 1` and `* sc` off the per-weight path
+# (TODO.md TPU-11). The decode yields a level in {0,1,2}; the shipped weight is
+# level-1, so
+#     sum_in (level-1) * x * sc  =  sc * (sum_in level * x - sum_in x)
+# and `sum_in x` is one scalar per token while `sc` is per out-column. Both
+# leave the per-weight path and land on the fp32 accumulator, so the
+# cancellation happens at full precision and only the result is rounded to
+# bf16 -- the same rounding the shipped path ends with.
+# The price: the accumulator now carries about twice the magnitude before the
+# correction, so it loses roughly one bit. The gate is the byte-identical
+# first token, not a tolerance. Default off until a receipt says otherwise.
+FOLD = os.environ.get("FOLD", "0") == "1"
+
 
 def _pallas(geom, B):
     IN, OUT, BPC, TOUT = geom
@@ -243,6 +275,7 @@ def _pallas(geom, B):
                 pl.BlockSpec((B, QK), lambda m, n, k: (0, k)),
                 pl.BlockSpec((RW, TC), lambda m, n, k: (m * BPC + k, 0)),
                 pl.BlockSpec((TC,), lambda m, n, k: (m * BPC + k,)),
+                pl.BlockSpec((B,), lambda m, n, k: (0,)),
             ],
             out_specs=pl.BlockSpec((B, TC), lambda m, n, k: (0, m)),
             scratch_shapes=[pltpu.VMEM((B, TC), jnp.float32)],
@@ -288,8 +321,11 @@ def proj(x, tile, name, B=None):
         B = x.shape[0]
     rep, sc = tile
     IN, OUT, BPC, TOUT = GEOM[name]
+    # the per-token sum of x, which is what the FOLD=1 path subtracts from the
+    # accumulator (see the FOLD note above the knob)
+    xs = x.astype(jnp.float32).sum(-1)
     return _pallas_cached((IN, OUT, BPC, TOUT), B)(
-        x.astype(jnp.bfloat16), rep, sc).astype(jnp.float32)
+        x.astype(jnp.bfloat16), rep, sc, xs).astype(jnp.float32)
 
 
 # %% cell [markdown]
