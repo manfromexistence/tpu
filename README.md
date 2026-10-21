@@ -57,6 +57,7 @@ per token).
 | `FOLD=0` | the shipped decode | 134.1 | 7.45 | **identical** |
 | `FOLD=1` | the level in bf16, the scale on the accumulator, the `- 1` folded into a per-token correction | **119.5** | **8.37** | **diverges** |
 | `FOLD=2` | the scale inside the bf16 cast: the MXU operand is `bf16((level-1)*sc)`, a bf16 tile | 129.9 | 7.70 | **identical** |
+| `FOLD=3` | the scale pre-rounded to bf16, the tile never leaves bf16 | **not measured** | -- | **provably identical** (0 differing words of 2048, `fold_test.py`) |
 
 The **oracle** is the from-scratch fp32 reference forward pass
 (`reference-forward-pass/`) run on the same prompt: it produces byte-identical
@@ -73,6 +74,18 @@ text to `FOLD=0`. So:
 Receipts: `receipt-fold0-`, `receipt-fold1-`, `receipt-fold2-b1-f16-tc1024.json`,
 all in `lane-aligned-ternary-kernel/`. The algebra is proved on CPU by
 `lane-aligned-ternary-kernel/fold_test.py` (worst relative difference 2.3e-07).
+
+**`FOLD=3` is the one to bet on.** The Pallas documentation is explicit:
+*"Even if you pass 32-bit operands to a matrix multiplication, they will be
+rounded to bfloat16 unless float32 precision is requested."* So the shipped
+path's fp32 tile was being rounded by the hardware before the MXU saw it, and
+the operand the MXU actually gets is `bf16((level-1)*sc)` -- which, since
+`level-1` is in {-1, 0, 1}, equals `(level-1)*bf16(sc)` exactly. Pre-rounding
+the scale to bf16 and multiplying in bf16 therefore produces a **bit-identical
+operand** (0 differing words of 2048, checked on CPU) while the tile stays bf16
+end to end, which is `FOLD=1`'s width. Expected: `FOLD=1`'s 119.5 ms with the
+shipped path's exact text. Not yet measured -- the pool has been 503ing for
+hours.
 
 ### 1.2 The chunked path: exact on the real model
 
