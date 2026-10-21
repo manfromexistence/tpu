@@ -174,9 +174,29 @@ def _kernel(x_ref, rep_ref, sc_ref, xs_ref, z_ref, acc_ref, *, nsteps):
     # output is bf16, so the cancellation happens at full precision and only
     # the corrected result is rounded.
     xs = xs_ref[...]                                               # (B,)
-    if FOLD:
+    # FOLD=1 moves the trit decode's `- 1` and `* sc` off the per-weight path.
+    # The decode yields a level in {0,1,2}; the shipped weight is level-1, so
+    #     sum_in (level-1) * x * sc = sc * (sum_in level * x - sum_in x)
+    # and `sum_in x` is ONE scalar per token, not one operation per weight.
+    # The scale is per out-column, so it belongs on the accumulator. Both are
+    # folded in fp32 *inside* the kernel: the accumulator is fp32 and the
+    # output is bf16, so the cancellation happens at full precision and only
+    # the corrected result is rounded.
+    #
+    # FOLD=2 keeps the shipped *rounding* but shrinks the tile: the scale goes
+    # inside the bf16 cast, so the MXU operand is bf16((level-1)*sc) -- what
+    # the fp32 tile rounds to anyway -- and the tile is bf16 instead of fp32.
+    # FOLD=1 is NOT the same model as FOLD=0: the oracle (the fp32 reference
+    # forward pass) agrees with FOLD=0's text and not with FOLD=1's, because
+    # `sum_in level * x` carries a drift of N*|x| against a sqrt(N)*|x| signal
+    # and the subtraction costs about three bits. FOLD=2 keeps the shipped
+    # operand, so it should reproduce the shipped text.
+    if FOLD == 1:
         def _w(g):
             return g.astype(jnp.bfloat16)
+    elif FOLD == 2:
+        def _w(g):
+            return ((g - 1) * sc).astype(jnp.bfloat16)
     else:
         def _w(g):
             return (g - 1).astype(jnp.bfloat16) * sc
@@ -222,7 +242,7 @@ def _kernel(x_ref, rep_ref, sc_ref, xs_ref, z_ref, acc_ref, *, nsteps):
 
     @pl.when(pl.program_id(2) == nsteps - 1)
     def _s():
-        if FOLD:
+        if FOLD == 1:
             # the fp32 accumulator minus the per-token sum of x, then the
             # per-out-column scale: both outside the per-weight path
             z_ref[...] = ((acc_ref[...] - xs[:, None]) * sc).astype(z_ref.dtype)
@@ -261,7 +281,9 @@ assert KVDTYPE in ("float32", "float16", "bfloat16"), KVDTYPE
 # The price: the accumulator now carries about twice the magnitude before the
 # correction, so it loses roughly one bit. The gate is the byte-identical
 # first token, not a tolerance. Default off until a receipt says otherwise.
-FOLD = os.environ.get("FOLD", "0") == "1"
+FOLD = int(os.environ.get("FOLD", "0"))
+# 0 = the shipped decode, 1 = the fold (the scale off the per-weight path),
+# 2 = the shipped rounding with a bf16 tile (the scale inside the cast)
 
 # CHUNK=k runs k tokens through the model in one pass, against the same
 # unpacked weights. The projections are per token, so the batch axis carries
@@ -611,25 +633,46 @@ def gdn_chunked(S0, q, k, v, alpha, beta):
     Shapes: S0 (B, I, J, H), q/k (B, T, I, H), v (B, T, J, H), alpha/beta
     (B, T, H). Returns o (B, T, J, H) and the state (B, I, J, H).
 
+    `alpha` is the LOG of the per-step decay, not the decay itself: the model
+    computes a log-decay (`gate`) and the shipped path multiplies the state by
+    exp(gate). The chunked form accumulates it in the LOG domain, because the
+    cumulative product underflows to zero inside a chunk when the decay is
+    strong -- the model's is -- and A_t/A_s cannot be recovered from a product
+    that has already flushed to zero.
+
     The derivation and its verification are in
     `tpu/multi-token-verification/kernel.py` (`gdn_chunked_jax`), which is the
-    same code: 48 cases, worst absolute difference 7.153e-07.
+    same code: 72 cases, worst absolute difference 7.153e-07, including a
+    decay profile that underflows.
     """
     B, T, I, H = q.shape
     J = v.shape[2]
+    # the shipped path casts the state to fp32 for the recurrence and casts
+    # back on the way out; the chunked one has to do the same or the state
+    # update runs in fp16
+    sdt = S0.dtype
+    S0 = S0.astype(jnp.float32)
 
-    A = jnp.cumprod(alpha, axis=1)                              # (B, T, H)
+    # cum_t = sum_{s<=t} log a_s -- the log of the cumulative decay A_t.
+    cum = jnp.cumsum(alpha, axis=1)                             # (B, T, H)
 
-    def ratios(Aax):
-        # ratio[t, s] = A_t / A_s for s <= t
-        r = Aax[:, :, None, :] / Aax[:, None, :, :]
-        return r * jnp.tril(jnp.ones((T, T), jnp.float32))[:, :, None]
+    def ratios(cum):
+        # ratio[t, s] = A_t / A_s = exp(cum_t - cum_s) for s <= t.
+        # The exponent is <= 0 there, so the ratio is <= 1. The upper triangle
+        # is selected away with `where` rather than multiplied by a mask:
+        # 0 * inf is NaN, and that is how the first chunked run failed.
+        d = cum[:, :, None, :] - cum[:, None, :, :]             # (B, T_t, T_s, H)
+        mask = jnp.tril(jnp.ones((T, T), jnp.float32))[:, :, None]
+        return jnp.where(mask, jnp.exp(d), 0.0)
 
-    ratio = ratios(A)
+    ratio = ratios(cum)
 
+    # the read against the state at the chunk start.  The recurrence reads from
+    # the *decayed* state, so the factor is A_t ( = alpha_t * A_{t-1} ), not
+    # A_{t-1}: that is the whole difference between this form and the scaled
+    # frame, and getting it wrong is invisible in the no-decay case.
     KtS0 = jnp.einsum("btih,bijh->btjh", k, S0)
-    # the read sees the *decayed* state, so the factor is A_t, not A_{t-1}
-    rhs = beta[:, :, None, :] * (v - A[:, :, None, :] * KtS0)
+    rhs = beta[:, :, None, :] * (v - jnp.exp(cum)[:, :, None, :] * KtS0)
 
     KK = jnp.einsum("bsih,btih->bsth", k, k)
     tri = jnp.tril(jnp.ones((T, T), jnp.float32), -1)
@@ -646,12 +689,11 @@ def gdn_chunked(S0, q, k, v, alpha, beta):
     S0Tq = jnp.einsum("bijh,btih->btjh", S0, q)
     ratioST = jnp.swapaxes(ratio, 1, 2)
     inner = jnp.einsum("bsth,bsjh->btjh", KQ * incl[:, :, None] * ratioST, dv)
-    o = (A[:, :, None, :] * S0Tq + inner) * (1.0 / jnp.sqrt(I))
+    o = (jnp.exp(cum)[:, :, None, :] * S0Tq + inner) * (1.0 / jnp.sqrt(I))
 
-    S = (A[:, -1][:, None, None, :] * S0
+    S = (jnp.exp(cum[:, -1])[:, None, None, :] * S0
          + jnp.einsum("bsih,bsjh->bijh", k, dv * ratio[:, -1][:, :, None, :]))
-    return o, S
-
+    return o, S.astype(sdt)
 
 def gdn_core_chunk(h, T, SW, S, hist, B):
     """The gated-delta layer for a chunk of B tokens against one state."""
@@ -677,8 +719,11 @@ def gdn_core_chunk(h, T, SW, S, hist, B):
     v = y[:, 2 * KEY_DIM:].reshape(B, NV, ST).transpose(0, 2, 1)
     q, k = q[:, :, _IIDX], k[:, :, _IIDX]
 
-    # the chunk-parallel recurrence: the state is updated once for the chunk
-    o, Sg = gdn_chunked(S, q[None], k[None], v[None], gate[None], beta[None])
+    # The chunk-parallel recurrence: the state is updated once for the chunk.
+    # `alpha` is the DECAY FACTOR, not its log: the shipped path multiplies the
+    # state by exp(gate), and the chunked form accumulates the factors.
+    o, Sg = gdn_chunked(S, q[None], k[None], v[None],
+                        gate[None], beta[None])
     o = o[0]
 
     zz = z.reshape(B, NV, ST).transpose(0, 2, 1)
@@ -688,7 +733,7 @@ def gdn_core_chunk(h, T, SW, S, hist, B):
     Q = jnp.transpose(o[:, :, _PERM], (0, 2, 3, 1))            # (B, NK, REP, ST)
     flat = Q.reshape(B, -1)
     return proj(fold_b(flat, SIGNS[ST * NV]), T["ssm_out.weight"],
-                "ssm_out.weight", B), Sg[0], hist_new[None]
+                "ssm_out.weight", B), Sg, hist_new[None]
 
 
 def attn_core_chunk(h, T, SW, K, V, pos, B):
@@ -718,14 +763,19 @@ def attn_core_chunk(h, T, SW, K, V, pos, B):
     V = jax.lax.dynamic_update_slice(V, v[None].astype(V.dtype), (0, pos, 0, 0))
 
     G = H // HKV
+    # The batch axis IS the chunk: B tokens, each with its own query. So the
+    # shipped path's einsum shapes apply unchanged, with B = k.
     qr = q.reshape(B, HKV, G, HD)
-    scores = jnp.einsum("bhgtd,bthd->bhgts", qr.astype(K.dtype), K) \
+    scores = jnp.einsum("bhgd,bthd->bhgt", qr.astype(K.dtype), K) \
         .astype(jnp.float32) * _ISS
-    # query j of the chunk may see the cache up to pos+j
+    # query j of the chunk may see the cache up to pos+j. The score tensor is
+    # (query in chunk, kv head, group, cache position), so the mask is
+    # (B, 1, 1, T): a (1, 1, T) mask would broadcast against the group axis
+    # instead of the query axis.
     allow = jnp.arange(K.shape[1])[None, :] <= positions[:, None]
-    scores = jnp.where(allow[None, None, :, :], scores, -1e30)
+    scores = jnp.where(allow[:, None, None, :], scores, -1e30)
     p = jax.nn.softmax(scores, -1)
-    o = jnp.einsum("bhgts,bthd->bhgtd", p, V.astype(p.dtype)).reshape(B, H, HD)
+    o = jnp.einsum("bhgt,bthd->bhgd", p, V.astype(p.dtype)).reshape(B, H, HD)
     o = o * jax.nn.sigmoid(g)
     return proj(fold_b(o.reshape(B, -1), SIGNS[H * HD]), T["attn_output.weight"],
                 "attn_output.weight", B), K, V
@@ -848,11 +898,15 @@ def chunk_check(state_dt, k):
     # the state *before* the k tokens, which is where the chunk has to start
     S_p, C_p, K_p, V_p = S_t, C_t, K_t, V_t
 
-    # k greedy steps, one token at a time, recording the argmaxes
+    # k greedy steps, one token at a time, recording the argmaxes.
+    # The step consumes the EMBEDDING of the token that was just argmaxed --
+    # that is what the model's own generation loop does, and feeding the
+    # hidden state instead is a different (wrong) model.
     arg = []
     for i in range(k):
         nxt = int(jnp.argmax(logits_b(x, OUT_RAW), axis=0)[0])
         arg.append(nxt)
+        x = jnp.broadcast_to(embed(nxt), (1, NEMB))
         x, S_t, C_t, K_t, V_t = jitted_step(
             x, jnp.int32(len(ids) + i), S_t, C_t, K_t, V_t, W_t, 1)
 
@@ -965,7 +1019,7 @@ def run_batch(B, state_dt):
         "num_scalar_prefetch": PREFETCH,
         "no_concat": "on" if NOCONCAT else "off",
         "gqa_attention": "on" if GQA else "off",
-        "decode_fold": "on" if FOLD else "off",
+        "decode_fold": FOLD,
         "chunk": CHUNK,
         "chunk_check": chk,
         "kv_cache_dtype": KVDTYPE,
@@ -995,7 +1049,9 @@ for spec in RUNS:
     try:
         RES.append(run_batch(int(b_s), d_s or "float32"))
     except Exception as e:                                  # noqa: BLE001
+        import traceback
         print(f"!!! run {spec} failed: {type(e).__name__}: {e}")
+        traceback.print_exc()
         gc.collect()
 
 print("\n=== summary ===")

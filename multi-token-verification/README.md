@@ -80,6 +80,51 @@ rather than a claim:
 3. **The decay ratio is transposed between the two matmuls.** `A_t/A_s` is
    indexed `[t, s]`; the Gram and the `k.q` matrices are indexed `[s, t]`.
 
+And a fourth, which only the model could teach: **the decay has to be
+accumulated in the log domain.** `A_t` is a product of decay factors, and the
+model's decay is strong enough that the product **underflows to zero** inside
+a chunk — after which `A_t/A_s` cannot be recovered, the upper triangle
+overflows, and `0 * inf = NaN` puts a NaN in the output. The fix is to
+accumulate the *log* decay and take the ratio as `exp(cum_t - cum_s)`, which
+is `<= 1` for `s <= t` and never underflows. The test carries a decay profile
+that underflows on purpose (`exp(-30 * rand)`), and the CPU contract now
+covers **72 cases**.
+
+## The result on the model (2026-10-21, Colab TPU v5e-1)
+
+`lane-aligned-ternary-kernel` grew a `CHUNK`/`CHUNKCHECK` pair, and the
+exactness gate runs the real 64-layer model: k tokens are replayed in **one
+chunked pass** from the state before them, and the per-position argmaxes are
+compared with the ones the sequential path produced for the same tokens.
+
+```text
+receipt-chunk4-b1-f16-tc1024.json
+  ms/step 133.9 | 7.47 tok/s | first token 271 | text identical to the shipped path
+  chunk check: 3/3 argmaxes agree, exact=true, first disagreement: None
+  sequential : 271, 248068, 198, 760
+  chunked   : 248068, 198, 760, 1156
+```
+
+The chunk's position `j` is the sequential path's position `j+1`, which is
+exactly what the derivation says it must be: the chunk's output after token `j`
+is the sequential state after token `j`. **The chunked path is exact on the
+real model.**
+
+Three bugs were found on the way there, and each of them is a trap worth
+naming:
+
+- **The decay was passed as a factor where the recurrence wanted its log.**
+  The shipped path multiplies the state by `exp(gate)`; the chunked form
+  accumulates the factors. Passing the log made the whole model output token
+  0.
+- **The mask was expanded to the wrong rank.** The chunked score tensor is
+  five axes, and a four-axis mask broadcasts against the *group* axis instead
+  of the query axis. It looked like a wrong attention mask.
+- **The chunked path was compared against a broken reference.** The reference
+  loop fed the hidden state into the next step; the model always feeds the
+  **embedding** of the previous token. Both sides of the comparison were
+  wrong, which is why the check "agreed" on zeros.
+
 ## The contract, and its result
 
 `kernel.py` holds six functions and two contracts:

@@ -76,7 +76,8 @@ def gdn_recurrence(S0, q, k, v, alpha, beta):
     S0    (I, J, H)   state at the start of the chunk
     q, k  (T, I, H)   key dim I
     v     (T, J, H)   value dim J
-    alpha (T, H)      decay per step (already exponentiated)
+    alpha (T, H)      the decay FACTOR per step (already exponentiated -- the
+                      model computes a log-decay and exponentiates it)
     beta  (T, H)      the delta rule's write rate
     returns o (T, J, H), S (I, J, H)
     """
@@ -101,34 +102,39 @@ def gdn_recurrence(S0, q, k, v, alpha, beta):
 # --------------------------------------------------------------------------
 # the chunk-parallel form of the same recurrence
 # --------------------------------------------------------------------------
-def gdn_chunked(S0, q, k, v, alpha, beta):
+def gdn_chunked(S0, q, k, v, log_alpha, beta):
     """k tokens of the same recurrence, as matmuls.
 
-    Same signature and same return as `gdn_recurrence`.
+    Same signature and same return as `gdn_recurrence`, except that the decay
+    is passed as its LOG: the cumulative product of the factors underflows to
+    zero inside a chunk when the model's decay is strong, and the ratio
+    A_t/A_s cannot be recovered from a product that has already flushed to
+    zero. The log domain never underflows -- the ratio is exp(cum_t - cum_s),
+    which is <= 1 for s <= t.
     """
     S0 = np.asarray(S0, np.float32)
     q, k, v = (np.asarray(z, np.float32) for z in (q, k, v))
-    alpha = np.asarray(alpha, np.float32)
+    log_alpha = np.asarray(log_alpha, np.float32)
     beta = np.asarray(beta, np.float32)
     T, I, H = q.shape
     J = v.shape[1]
 
-    # A_t = prod_{s<=t} a_s, and A_{t-1} (A_0 = 1)
-    A = np.empty((T, H), np.float32)
-    np.cumprod(alpha, axis=0, out=A)
-    Aprev = np.concatenate([np.ones((1, H), np.float32), A[:-1]], 0)
+    # cum_t = sum_{s<=t} log a_s  (the log of A_t)
+    cum = np.cumsum(log_alpha, axis=0)
 
     # ratio[t, s] = A_t / A_s for s <= t, else 0.  Every entry is <= 1.
+    # The denominator is guarded: the model's decay can underflow the
+    # cumulative product to zero inside a chunk.
     ratio = np.zeros((T, T, H), np.float32)
     for t in range(T):
-        ratio[t, :t + 1] = A[t][None, :] / A[:t + 1]
+        ratio[t, :t + 1] = np.exp(cum[t][None, :] - cum[:t + 1])
 
     # the read against the state at the chunk start.  The recurrence reads from
     # the *decayed* state, so the factor is A_t ( = alpha_t * A_{t-1} ), not
     # A_{t-1}: that is the whole difference between this form and the scaled
     # frame, and getting it wrong is invisible in the no-decay case.
     KtS0 = np.einsum("tih,ijh->tjh", k, S0)                 # (T, J, H)
-    rhs = beta[:, None, :] * (v - A[:, None, :] * KtS0)
+    rhs = beta[:, None, :] * (v - np.exp(cum)[:, None, :] * KtS0)
 
     # the intra-chunk coupling: M[t, s] = beta_t * (A_t/A_s) * (k_s . k_t)
     KK = np.einsum("sih,tih->sth", k, k)                    # (T, T, H)
@@ -158,10 +164,10 @@ def gdn_chunked(S0, q, k, v, alpha, beta):
     S0Tq = np.einsum("ijh,tih->tjh", S0, q)                 # (T, J, H)
     # the ratio is indexed [t, s] (A_t/A_s) while KQ is indexed [s, t]
     inner = np.einsum("sth,sjh->tjh", KQ * incl * ratio.transpose(1, 0, 2), dv)
-    o = (A[:, None, :] * S0Tq + inner) * np.float32(1.0 / np.sqrt(I))
+    o = (np.exp(cum)[:, None, :] * S0Tq + inner) * np.float32(1.0 / np.sqrt(I))
 
     # the state at the end of the chunk: A_C S_0 + sum_s (A_C/A_s) k_s dv_s^T
-    S = A[-1][None, None, :] * S0 + np.einsum(
+    S = np.exp(cum[-1])[None, None, :] * S0 + np.einsum(
         "sih,sjh->ijh", k, dv * ratio[-1, :, None])
     return o, S
 
@@ -171,7 +177,7 @@ def gdn_chunked(S0, q, k, v, alpha, beta):
 # --------------------------------------------------------------------------
 if HAVE_JAX:
 
-    def gdn_chunked_jax(S0, q, k, v, alpha, beta):
+    def gdn_chunked_jax(S0, q, k, v, log_alpha, beta):
         """JAX version, batched over the batch axis (B, ...).
 
         The batch axis is folded into the head axis: the triangular solve and
@@ -179,25 +185,27 @@ if HAVE_JAX:
         nothing.
         """
         S0, q, k, v = (jnp.asarray(z, jnp.float32) for z in (S0, q, k, v))
-        alpha = jnp.asarray(alpha, jnp.float32)
+        log_alpha = jnp.asarray(log_alpha, jnp.float32)
         beta = jnp.asarray(beta, jnp.float32)
         B, T, I, H = q.shape
         J = v.shape[2]
 
-        A = jnp.cumprod(alpha, axis=1)                       # (B, T, H)
+        cum = jnp.cumsum(log_alpha, axis=1)                  # (B, T, H): log A_t
 
-        def ratios(Aax):
-            # (B, T, T, H): ratio[t, s] = A_t / A_s for s <= t
-            num = Aax[:, :, None, :]                          # (B, T, 1, H)
-            den = Aax[:, None, :, :]                          # (B, 1, T, H)
-            r = num / den
+        def ratios(cum):
+            # (B, T, T, H): ratio[t, s] = A_t / A_s = exp(cum_t - cum_s)
+            # for s <= t. The log domain never underflows, and the exponent is
+            # <= 0 there, so the ratio is <= 1. The upper triangle is selected
+            # away with where rather than multiplied by a mask: 0 * inf is
+            # NaN, and that is how the first chunked run on the TPU failed.
+            d = cum[:, :, None, :] - cum[:, None, :, :]         # (B, T_t, T_s, H)
             mask = jnp.tril(jnp.ones((T, T), jnp.float32))
-            return r * mask[:, :, None]
+            return jnp.where(mask[:, :, None], jnp.exp(d), 0.0)
 
-        ratio = ratios(A)
+        ratio = ratios(cum)
 
         KtS0 = jnp.einsum("btih,bijh->btjh", k, S0)
-        rhs = beta[:, :, None, :] * (v - A[:, :, None, :] * KtS0)
+        rhs = beta[:, :, None, :] * (v - jnp.exp(cum)[:, :, None, :] * KtS0)
 
         KK = jnp.einsum("bsih,btih->bsth", k, k)
         tri = jnp.tril(jnp.ones((T, T), jnp.float32), -1)
@@ -220,10 +228,10 @@ if HAVE_JAX:
         # ratio is [b, t, s, h] and KQ is [b, s, t, h]: transpose the ratio
         ratioST = jnp.swapaxes(ratio, 1, 2)
         inner = jnp.einsum("bsth,bsjh->btjh", KQ * incl[:, :, None] * ratioST, dv)
-        o = (A[:, :, None, :] * S0Tq + inner) * (1.0 / jnp.sqrt(I))
+        o = (jnp.exp(cum)[:, :, None, :] * S0Tq + inner) * (1.0 / jnp.sqrt(I))
 
         # ratio[:, -1] is (B, T, H) = A_C/A_s per step; dv is (B, T, J, H)
-        S = (A[:, -1][:, None, None, :] * S0
+        S = (jnp.exp(cum[:, -1])[:, None, None, :] * S0
              + jnp.einsum("bsih,bsjh->bijh", k, dv * ratio[:, -1][:, :, None, :]))
         return o, S
 
@@ -243,6 +251,10 @@ def test_equivalence(verbose=True):
         ("mild decay",      lambda T, H: np.exp(-0.1 * rng.random((T, H)).astype(np.float32))),
         ("strong decay",    lambda T, H: np.exp(-1.5 * rng.random((T, H)).astype(np.float32))),
         ("per-head decay",  lambda T, H: np.exp(-2.0 * rng.random((T, H)).astype(np.float32))),
+        # the model's own decay is strong enough to underflow the cumulative
+        # product inside a chunk: the first chunked run on the TPU produced
+        # NaN for exactly this reason
+        ("underflowing",    lambda T, H: np.exp(-30.0 * rng.random((T, H)).astype(np.float32))),
     ]
     for T, I, J, H in [(1, 16, 16, 4), (4, 16, 16, 4), (8, 32, 32, 8),
                        (16, 32, 32, 8), (16, 64, 64, 16), (32, 32, 32, 8)]:
@@ -263,14 +275,16 @@ def test_equivalence(verbose=True):
             beta = rng.random((T, H)).astype(np.float32) * 0.9 + 0.05
 
             o_ref, S_ref = gdn_recurrence(S0, q, k, v, alpha, beta)
-            o_new, S_new = gdn_chunked(S0, q, k, v, alpha, beta)
+            # the chunked form takes the LOG of the decay (see its docstring)
+            o_new, S_new = gdn_chunked(S0, q, k, v, np.log(alpha), beta)
             eo = float(np.max(np.abs(o_ref - o_new)))
             eS = float(np.max(np.abs(S_ref - S_new)))
             worst = max(worst, eo, eS)
             cases.append((T, I, J, H, name, eo, eS))
             if HAVE_JAX:
                 o_j, S_j = gdn_chunked_jax(
-                    S0[None], q[None], k[None], v[None], alpha[None], beta[None])
+                    S0[None], q[None], k[None], v[None],
+                    np.log(alpha)[None], beta[None])
                 eo_j = float(np.max(np.abs(o_ref - np.asarray(o_j)[0])))
                 eS_j = float(np.max(np.abs(S_ref - np.asarray(S_j)[0])))
                 worst = max(worst, eo_j, eS_j)
