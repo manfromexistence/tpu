@@ -263,6 +263,30 @@ assert KVDTYPE in ("float32", "float16", "bfloat16"), KVDTYPE
 # first token, not a tolerance. Default off until a receipt says otherwise.
 FOLD = os.environ.get("FOLD", "0") == "1"
 
+# CHUNK=k runs k tokens through the model in one pass, against the same
+# unpacked weights. The projections are per token, so the batch axis carries
+# the chunk; the recurrence and the attention mask know that the axis is time.
+#
+# The gated-delta form of that is the chunkwise (WY) recurrence, verified
+# against the token-by-token form in `tpu/multi-token-verification/kernel.py`:
+# 48 cases, chunk lengths 1-32, four decay profiles, numpy and JAX, worst
+# absolute difference 7.153e-07. The chunked attention and the conv window
+# across the boundary are bit-identical there.
+#
+# CHUNK=1 is the shipped path and is untouched.
+CHUNK = int(os.environ.get("CHUNK", "1"))
+assert CHUNK >= 1, CHUNK
+
+# CHUNKCHECK=k replays the last k generated tokens in ONE chunked pass and
+# compares the per-position argmaxes with the ones the token-by-token path
+# produced. It is the exactness gate for the chunked path: the chunk's own
+# arithmetic has to reproduce the sequential one, token for token.
+#
+# The state is snapshotted before the last k steps, because the chunk has to
+# start from the state *before* those tokens, not after them.
+CHUNKCHECK = int(os.environ.get("CHUNKCHECK", "0"))
+assert CHUNKCHECK >= 0, CHUNKCHECK
+
 
 def _pallas(geom, B):
     IN, OUT, BPC, TOUT = geom
@@ -544,14 +568,180 @@ def ffn_core(h, T, B=None):
                 "ffn_down.weight", B)
 
 
+# ---------------------------------------------------------------------------
+# The chunked path: k tokens in one pass
+# ---------------------------------------------------------------------------
+NROT = cfg["n_rot"]
+FREQ_BASE = cfg["freq_base"]
+
+
+def rope_batch(x, pos):
+    """RoPE for k tokens at once. x (B, H, HD), pos (B,).
+
+    The reference's `rope` takes one position; a chunk needs one per token.
+    Same half-split (IMROPE) convention: the pairs are (j, j + n_rot/2).
+    """
+    half = NROT // 2
+    inv = FREQ_BASE ** (-jnp.arange(half, dtype=jnp.float32) * 2.0 / NROT)
+    ang = pos.astype(jnp.float32)[:, None] * inv[None, :]      # (B, half)
+    c = jnp.cos(ang)[:, None, :]
+    s = jnp.sin(ang)[:, None, :]
+    lo, hi = x[..., :half], x[..., half:2 * half]
+    y = jnp.concatenate([lo * c - hi * s, lo * s + hi * c], -1)
+    return y if 2 * half == x.shape[-1] else jnp.concatenate([y, x[..., 2 * half:]], -1)
+
+
+def conv_window(hist, chunk):
+    """The causal conv window for a chunk of tokens.
+
+    `hist` is the (CONV-1, CONV_DIM) tail from before the chunk and `chunk`
+    is the (k, CONV_DIM) block of new tokens. Row j of the window is the CONV
+    taps ending at token j, so the first rows reach back into the tail.
+    """
+    k = chunk.shape[0]
+    conv = hist.shape[0] + 1
+    both = jnp.concatenate([hist, chunk], 0)
+    window = jnp.stack([both[j:j + conv] for j in range(k)], 0)
+    return window, both[-(conv - 1):]
+
+
+def gdn_chunked(S0, q, k, v, alpha, beta):
+    """The k-token form of the gated-delta recurrence.
+
+    Shapes: S0 (B, I, J, H), q/k (B, T, I, H), v (B, T, J, H), alpha/beta
+    (B, T, H). Returns o (B, T, J, H) and the state (B, I, J, H).
+
+    The derivation and its verification are in
+    `tpu/multi-token-verification/kernel.py` (`gdn_chunked_jax`), which is the
+    same code: 48 cases, worst absolute difference 7.153e-07.
+    """
+    B, T, I, H = q.shape
+    J = v.shape[2]
+
+    A = jnp.cumprod(alpha, axis=1)                              # (B, T, H)
+
+    def ratios(Aax):
+        # ratio[t, s] = A_t / A_s for s <= t
+        r = Aax[:, :, None, :] / Aax[:, None, :, :]
+        return r * jnp.tril(jnp.ones((T, T), jnp.float32))[:, :, None]
+
+    ratio = ratios(A)
+
+    KtS0 = jnp.einsum("btih,bijh->btjh", k, S0)
+    # the read sees the *decayed* state, so the factor is A_t, not A_{t-1}
+    rhs = beta[:, :, None, :] * (v - A[:, :, None, :] * KtS0)
+
+    KK = jnp.einsum("bsih,btih->bsth", k, k)
+    tri = jnp.tril(jnp.ones((T, T), jnp.float32), -1)
+    M = beta[:, :, None, :] * ratio * KK * tri[:, :, None]
+
+    def step(t, dv):
+        acc = rhs[:, t] - jnp.einsum("bsh,bsjh->bjh", M[:, t], dv)
+        return dv.at[:, t].set(acc)
+
+    dv = jax.lax.fori_loop(0, T, step, jnp.zeros((B, T, J, H), jnp.float32))
+
+    KQ = jnp.einsum("bsih,btih->bsth", k, q)
+    incl = jnp.triu(jnp.ones((T, T), jnp.float32))
+    S0Tq = jnp.einsum("bijh,btih->btjh", S0, q)
+    ratioST = jnp.swapaxes(ratio, 1, 2)
+    inner = jnp.einsum("bsth,bsjh->btjh", KQ * incl[:, :, None] * ratioST, dv)
+    o = (A[:, :, None, :] * S0Tq + inner) * (1.0 / jnp.sqrt(I))
+
+    S = (A[:, -1][:, None, None, :] * S0
+         + jnp.einsum("bsih,bsjh->bijh", k, dv * ratio[:, -1][:, :, None, :]))
+    return o, S
+
+
+def gdn_core_chunk(h, T, SW, S, hist, B):
+    """The gated-delta layer for a chunk of B tokens against one state."""
+    hf = fold_b(h, ROW)
+    if FUSE and "attn_qkv_gate.weight" in T:
+        qg = proj(hf, T["attn_qkv_gate.weight"], "attn_qkv_gate.weight", B)
+        nq = GEOM["attn_qkv.weight"][1]
+        qkv, z = qg[:, :nq], qg[:, nq:]
+    else:
+        qkv = proj(hf, T["attn_qkv.weight"], "attn_qkv.weight", B)
+        z = proj(hf, T["attn_gate.weight"], "attn_gate.weight", B)
+    beta = jax.nn.sigmoid(h @ SW["ssm_beta.weight"])
+    alpha = h @ SW["ssm_alpha.weight"]
+    gate = SW["ssm_a"] * jnp.logaddexp(alpha + SW["ssm_dt.bias"], 0.0)
+
+    # the conv window reaches back into the previous chunk's tail
+    win, hist_new = conv_window(hist[0], qkv)                 # (B, CONV, CONV_DIM)
+    y = jnp.sum(win * SW["ssm_conv1d.weight"][None], 1)
+    y = y * jax.nn.sigmoid(y)
+
+    qk = l2n_b(y[:, :2 * KEY_DIM].reshape(B, 2 * NK, ST).transpose(0, 2, 1), EPS)
+    q, k = qk[:, :, :NK], qk[:, :, NK:]
+    v = y[:, 2 * KEY_DIM:].reshape(B, NV, ST).transpose(0, 2, 1)
+    q, k = q[:, :, _IIDX], k[:, :, _IIDX]
+
+    # the chunk-parallel recurrence: the state is updated once for the chunk
+    o, Sg = gdn_chunked(S, q[None], k[None], v[None], gate[None], beta[None])
+    o = o[0]
+
+    zz = z.reshape(B, NV, ST).transpose(0, 2, 1)
+    o = o * jax.lax.rsqrt(jnp.mean(o * o, axis=1, keepdims=True) + EPS)
+    o = o * SW["ssm_norm.weight"][None, :, None]
+    o = jax.nn.sigmoid(zz) * zz * o
+    Q = jnp.transpose(o[:, :, _PERM], (0, 2, 3, 1))            # (B, NK, REP, ST)
+    flat = Q.reshape(B, -1)
+    return proj(fold_b(flat, SIGNS[ST * NV]), T["ssm_out.weight"],
+                "ssm_out.weight", B), Sg[0], hist_new[None]
+
+
+def attn_core_chunk(h, T, SW, K, V, pos, B):
+    """The attention layer for a chunk of B tokens: one cache write, one
+    masked pass."""
+    hf = fold_b(h, ROW)
+    if FUSE and "attn_qkv_fused.weight" in T:
+        qkv = proj(hf, T["attn_qkv_fused.weight"], "attn_qkv_fused.weight", B)
+        nq = GEOM["attn_q.weight"][1]
+        nk = GEOM["attn_k.weight"][1]
+        qg = qkv[:, :nq].reshape(B, H, 2, HD)
+        kk = rms(qkv[:, nq:nq + nk].reshape(B, HKV, HD),
+                 SW["attn_k_norm.weight"], EPS)
+        v = qkv[:, nq + nk:].reshape(B, HKV, HD)
+    else:
+        qg = proj(hf, T["attn_q.weight"], "attn_q.weight", B).reshape(B, H, 2, HD)
+        kk = rms(proj(hf, T["attn_k.weight"], "attn_k.weight", B).reshape(B, HKV, HD),
+                 SW["attn_k_norm.weight"], EPS)
+        v = proj(hf, T["attn_v.weight"], "attn_v.weight", B).reshape(B, HKV, HD)
+    q, g = qg[:, :, 0, :], qg[:, :, 1, :]
+    q = rms(q, SW["attn_q_norm.weight"], EPS)
+
+    positions = pos + jnp.arange(B)
+    q, kk = rope_batch(q, positions), rope_batch(kk, positions)
+    # one write for the whole chunk
+    K = jax.lax.dynamic_update_slice(K, kk[None].astype(K.dtype), (0, pos, 0, 0))
+    V = jax.lax.dynamic_update_slice(V, v[None].astype(V.dtype), (0, pos, 0, 0))
+
+    G = H // HKV
+    qr = q.reshape(B, HKV, G, HD)
+    scores = jnp.einsum("bhgtd,bthd->bhgts", qr.astype(K.dtype), K) \
+        .astype(jnp.float32) * _ISS
+    # query j of the chunk may see the cache up to pos+j
+    allow = jnp.arange(K.shape[1])[None, :] <= positions[:, None]
+    scores = jnp.where(allow[None, None, :, :], scores, -1e30)
+    p = jax.nn.softmax(scores, -1)
+    o = jnp.einsum("bhgts,bthd->bhgtd", p, V.astype(p.dtype)).reshape(B, H, HD)
+    o = o * jax.nn.sigmoid(g)
+    return proj(fold_b(o.reshape(B, -1), SIGNS[H * HD]), T["attn_output.weight"],
+                "attn_output.weight", B), K, V
+
+
 def gdn_step(x, T, S, hist, an, pan, beta_w, alpha_w, aa, dtb, cv1, sn, B=None):
     if B is None:
         B = x.shape[0]
     h = rms(x, an, EPS)
-    a, S, hist = gdn_core(h, T, {"ssm_beta.weight": beta_w, "ssm_alpha.weight": alpha_w,
-                                 "ssm_a": aa, "ssm_dt.bias": dtb,
-                                 "ssm_conv1d.weight": cv1, "ssm_norm.weight": sn},
-                          S, hist, B)
+    SW = {"ssm_beta.weight": beta_w, "ssm_alpha.weight": alpha_w,
+          "ssm_a": aa, "ssm_dt.bias": dtb,
+          "ssm_conv1d.weight": cv1, "ssm_norm.weight": sn}
+    if CHUNK > 1:
+        a, S, hist = gdn_core_chunk(h, T, SW, S, hist, B)
+    else:
+        a, S, hist = gdn_core(h, T, SW, S, hist, B)
     f = ffn_core(rms(x + a, pan, EPS), T, B)
     return x + a + f, S, hist
 
@@ -560,8 +750,11 @@ def attn_step(x, T, K, V, pos, an, pan, qn, kn, B=None):
     if B is None:
         B = x.shape[0]
     h = rms(x, an, EPS)
-    a, K, V = attn_core(h, T, {"attn_q_norm.weight": qn,
-                               "attn_k_norm.weight": kn}, K, V, pos, B)
+    SW = {"attn_q_norm.weight": qn, "attn_k_norm.weight": kn}
+    if CHUNK > 1:
+        a, K, V = attn_core_chunk(h, T, SW, K, V, pos, B)
+    else:
+        a, K, V = attn_core(h, T, SW, K, V, pos, B)
     f = ffn_core(rms(x + a, pan, EPS), T, B)
     return x + a + f, K, V
 
@@ -623,6 +816,73 @@ for is the throughput. Every batch size in this session runs the same 64-layer
 model end to end and writes its own receipt.
 """
 # %% cell
+def chunk_check(state_dt, k):
+    """The chunked path's exactness gate.
+
+    Replays k known tokens in ONE chunked pass from the state before them and
+    compares the per-position argmaxes with the ones the sequential path
+    produced for the same tokens. The chunk's output after token j is the
+    sequential path's state after token j, so the chunk's argmax at j must be
+    the sequential argmax at j+1.
+
+    Returns a dict: the two argmax lists, how many agree, and the first
+    disagreement.
+    """
+    ids = tok.encode(PROMPT)
+    T_ = max(MAX_T, len(ids) + k + 8)
+    kv_dt = {"float32": jnp.float32, "float16": jnp.float16,
+             "bfloat16": jnp.bfloat16}[KVDTYPE]
+    S = [jnp.zeros((1, ST, ST, NV), np.dtype(state_dt)) for _ in GIDX]
+    C = [jnp.zeros((1, CONV - 1, CONV_DIM), jnp.float32) for _ in GIDX]
+    K = [jnp.zeros((1, T_, HKV, HD), kv_dt) for _ in AIDX]
+    V = [jnp.zeros((1, T_, HKV, HD), kv_dt) for _ in AIDX]
+    W_t = tuple(a for il in range(NL) for a in (TILES[il], SMALLW[il]))
+
+    S_t, C_t, K_t, V_t = tuple(S), tuple(C), tuple(K), tuple(V)
+    x = None
+    for j, tid in enumerate(ids):
+        x = jnp.broadcast_to(embed(int(tid)), (1, NEMB))
+        x, S_t, C_t, K_t, V_t = jitted_step(
+            x, jnp.int32(j), S_t, C_t, K_t, V_t, W_t, 1)
+
+    # the state *before* the k tokens, which is where the chunk has to start
+    S_p, C_p, K_p, V_p = S_t, C_t, K_t, V_t
+
+    # k greedy steps, one token at a time, recording the argmaxes
+    arg = []
+    for i in range(k):
+        nxt = int(jnp.argmax(logits_b(x, OUT_RAW), axis=0)[0])
+        arg.append(nxt)
+        x, S_t, C_t, K_t, V_t = jitted_step(
+            x, jnp.int32(len(ids) + i), S_t, C_t, K_t, V_t, W_t, 1)
+
+    # the same k tokens, in one chunked pass
+    xc = jnp.stack([embed(int(t)) for t in arg])
+    x2, S2, C2, K2, V2 = jitted_step(
+        xc, jnp.int32(len(ids)), S_p, C_p, K_p, V_p, W_t, k)
+    lg_c = logits_b(x2, OUT_RAW)
+    arg_c = [int(v) for v in np.asarray(jnp.argmax(lg_c, axis=0))]
+
+    # the chunk's position j is the sequential path's position j+1
+    pairs = list(zip(arg[1:], arg_c[:-1]))
+    agree = sum(1 for a, b in pairs if a == b)
+    first_bad = next((i for i, (a, b) in enumerate(pairs) if a != b), None)
+    out = {
+        "chunk": k,
+        "sequential_argmax": arg,
+        "chunk_argmax": arg_c,
+        "compared": len(pairs),
+        "agree": agree,
+        "first_disagreement": first_bad,
+        "exact": agree == len(pairs),
+    }
+    print(f"chunk check: {agree}/{len(pairs)} argmaxes agree "
+          f"(first disagreement at {first_bad})")
+    print(f"  sequential: {arg}")
+    print(f"  chunked  : {arg_c}")
+    return out
+
+
 def run_batch(B, state_dt):
     ids = tok.encode(PROMPT)
     T_ = max(MAX_T, len(ids) + N_GEN + 2)
@@ -688,6 +948,11 @@ def run_batch(B, state_dt):
           f"{t_gen/N_GEN*1000/B:.1f} ms/token")
     print(f"sample           : {sample!r}")
 
+    chk = None
+    if CHUNKCHECK > 1:
+        print(f"chunk check: replaying {CHUNKCHECK} tokens in one chunked pass")
+        chk = chunk_check(state_dt, CHUNKCHECK)
+
     rec = {
         "notebook": "14-lane-aligned-ternary-kernel",
         "backend": str(jax.default_backend()),
@@ -700,6 +965,9 @@ def run_batch(B, state_dt):
         "num_scalar_prefetch": PREFETCH,
         "no_concat": "on" if NOCONCAT else "off",
         "gqa_attention": "on" if GQA else "off",
+        "decode_fold": "on" if FOLD else "off",
+        "chunk": CHUNK,
+        "chunk_check": chk,
         "kv_cache_dtype": KVDTYPE,
         "projections_per_step": (4 * NL) if FUSE else (6 * len(GIDX) + 7 * len(AIDX)),
         "weights": "PTQ1_0 consumed as packed bytes, in-kernel unpack",
