@@ -82,33 +82,54 @@ rather than a claim:
 
 ## The contract, and its result
 
-`kernel.py` holds three functions:
+`kernel.py` holds six functions and two contracts:
 
 | function | what it is |
 | --- | --- |
 | `gdn_recurrence` | the recurrence we ship, transcribed token by token |
 | `gdn_chunked` | the same recurrence as matmuls (numpy reference) |
 | `gdn_chunked_jax` | the same thing in JAX, batched over the batch axis |
+| `attn_token_by_token` | the kernel's attention, one token at a time |
+| `attn_chunk` | the same attention for k tokens: one cache write, one masked pass |
+| `conv_window` | the causal conv window across a chunk boundary |
 
-`test_equivalence()` is the contract: the chunked form must equal the
-token-by-token form to fp32 rounding, for every decay profile, including strong
-decay. **Run: `python kernel.py`** (numpy only; with JAX installed it also
-checks the JAX form).
+`test_equivalence()` and `test_attention_and_conv()` are the contracts.
+**Run: `python kernel.py`** (numpy only; with JAX installed it also checks the
+JAX form).
 
 ```text
-  T    I    J    H  profile                     max|do|      max|dS|
-  1   16   16    4  no decay                  4.470e-08    0.000e+00
-  4   16   16    4  strong decay              1.505e-01    8.941e-08
- 16   32   32    8  per-head decay            2.980e-08    1.788e-07
- 32   32   32    8  strong decay              8.941e-08    9.841e-08
-  ...
-worst absolute error over 48 cases: 7.153e-07
+worst absolute error over 48 cases: 7.153e-07      <- the gated-delta recurrence
 PASS
+ heads   kv   hd     T   pos    k      max|do|      max|dK|      max|dV|
+    24    4   32    64    40    4    0.000e+00    0.000e+00    0.000e+00
+    24    4   32    64    40   16    0.000e+00    0.000e+00    0.000e+00
+     8    2   16   128   100    8    0.000e+00    0.000e+00    0.000e+00
+ conv   dim    k    max|dwin|   max|dhist|
+     4    16    4    0.000e+00    0.000e+00
+     4    16   16    0.000e+00    0.000e+00
 ```
 
-**48 cases: chunk lengths 1-32, four decay profiles (none / mild / strong /
-per-head), numpy and JAX, outputs and final state.** The worst absolute
-difference is 7.15e-07 — fp32 rounding, not a modelling difference.
+**The recurrence: 48 cases** — chunk lengths 1-32, four decay profiles (none /
+mild / strong / per-head), numpy and JAX, outputs and final state. The worst
+absolute difference is **7.15e-07**, which is fp32 rounding, not a modelling
+difference.
+
+**The attention and the conv: bit-identical** (0.0 everywhere). The chunked
+attention is the same arithmetic with the k queries in one pass, so it *must*
+be bit-identical; it is not, one of three bugs shows up:
+
+1. **The head axis must not be folded into the time axis.** The query's heads
+   are `h*G+g`, so a chunk of k tokens is `(k, n_heads, hd)` and splitting the
+   heads into `(kv head, group)` has to keep the time axis separate. A plain
+   `reshape(n_kv, G, k, hd)` silently interleaves the two, and the error looks
+   like a wrong attention mask.
+2. **The mask broadcasts as (1, 1, k, T)** against a score tensor shaped
+   `(kv head, group, query in chunk, cache position)` — one `None` too many
+   turns it into a five-axis tensor and numpy then refuses the `einsum`.
+3. **The cache write happens once, before any read** — so the chunked form
+   *can* see the later tokens of its own chunk, and the causal mask is what
+   stops it. A mask that is off by one position shows up as a plausible-looking
+   number rather than an error.
 
 One numerical property worth keeping: the test uses **L2-normalised** keys and
 queries, because the model does (`l2n_b`, `../lane-aligned-ternary-kernel/kernel.py:388`).
@@ -172,4 +193,4 @@ bigger draft.
   implementation.
 
 MIT OR Apache-2.0
-updated: 2026-10-21 03:40 UTC
+updated: 2026-10-21 05:10 UTC

@@ -287,6 +287,143 @@ def test_equivalence(verbose=True):
     return worst < 2e-4
 
 
+# --------------------------------------------------------------------------
+# the chunk boundary: the causal conv window and the chunked attention
+# --------------------------------------------------------------------------
+def conv_window(hist, chunk):
+    """The causal depthwise conv window for a chunk of tokens.
+
+    The conv is `CONV` taps ending at the current token. For a chunk of k
+    tokens the first rows must reach *back* into the previous chunk's tail, so
+    the window for row j is
+
+        [ hist tail ] ++ [ chunk[0 .. j] ]
+
+    `hist` holds the last CONV-1 tokens before the chunk; `chunk` holds the k
+    new ones, each (CONV_DIM,).
+
+    Returns (window, new_hist): the window is (k, CONV, CONV_DIM) and the new
+    history is the last CONV-1 tokens of hist ++ chunk.
+    """
+    hist = np.asarray(hist)
+    chunk = np.asarray(chunk)
+    k = chunk.shape[0]
+    conv = hist.shape[0] + 1                 # CONV
+    both = np.concatenate([hist, chunk], 0)  # (CONV-1+k, CONV_DIM)
+    window = np.stack([both[j:j + conv] for j in range(k)], 0)
+    new_hist = both[-(conv - 1):] if conv > 1 else both[:0]
+    return window, new_hist
+
+
+def attention_mask(pos, k, total):
+    """The causal mask for k queries at positions pos .. pos+k-1.
+
+    Row j of the mask allows the cache positions 0 .. pos+j.
+    """
+    qpos = pos + np.arange(k)
+    return np.arange(total)[None, :] <= qpos[:, None]
+
+
+def attn_token_by_token(q, k_, v, K, V, pos, n_heads, n_kv, hd):
+    """The kernel's attention, one token at a time (the reference).
+
+    The cache layout is the kernel's: (T, n_kv, hd) -- time first, then the kv
+    heads (`K`/`V` in `attn_core`, kernel.py:466-467).
+    """
+    T = K.shape[0]
+    G = n_heads // n_kv
+    iss = np.float32(1.0 / np.sqrt(hd))
+    Kj = K.copy()
+    Vj = V.copy()
+    outs = []
+    for j in range(q.shape[0]):
+        Kj[pos + j] = k_[j]
+        Vj[pos + j] = v[j]
+        qr = q[j].reshape(n_kv, G, hd)
+        scores = np.einsum("hgd,shd->hgs", qr, Kj).astype(np.float32) * iss
+        scores = np.where(attention_mask(pos + j, 1, T), scores, np.float32(-1e30))
+        p = np.exp(scores - scores.max(-1, keepdims=True))
+        p = p / p.sum(-1, keepdims=True)
+        o = np.einsum("hgs,shd->hgd", p, Vj)
+        outs.append(o.reshape(n_heads, hd))
+    return np.stack(outs, 0), Kj, Vj
+
+
+def attn_chunk(q, k_, v, K, V, pos, n_heads, n_kv, hd):
+    """The same attention for k tokens: one cache write, one masked pass."""
+    T = K.shape[0]
+    k = q.shape[0]
+    G = n_heads // n_kv
+    iss = np.float32(1.0 / np.sqrt(hd))
+    Kc = K.copy()
+    Vc = V.copy()
+    Kc[pos:pos + k] = k_
+    Vc[pos:pos + k] = v
+    # the head axis of q is h*G+g, so the heads split into (kv head, group);
+    # the time axis must not be folded into that split
+    qr = q.reshape(k, n_kv, G, hd).transpose(1, 2, 0, 3)      # (kv, group, k, hd)
+    scores = np.einsum("hgtd,shd->hgts", qr, Kc).astype(np.float32) * iss
+    allow = attention_mask(pos, k, T)          # (k, T)
+    # scores is (kv head, group, query in chunk, cache position): the mask
+    # broadcasts as (1, 1, k, T)
+    scores = np.where(allow[None, None, :, :], scores, np.float32(-1e30))
+    p = np.exp(scores - scores.max(-1, keepdims=True))
+    p = p / p.sum(-1, keepdims=True)
+    o = np.einsum("hgts,shd->hgtd", p, Vc)                    # (kv, group, k, hd)
+    return o.transpose(2, 0, 1, 3).reshape(k, n_heads, hd), Kc, Vc
+
+
+def test_attention_and_conv(verbose=True):
+    """The chunked attention and the conv window must equal the token-by-token
+    forms."""
+    rng = np.random.default_rng(20261021)
+    worst = 0.0
+    cases = []
+
+    for n_heads, n_kv, hd in [(24, 4, 32), (8, 2, 16)]:
+        for T, pos, k in [(64, 40, 4), (64, 40, 16), (128, 100, 8), (32, 0, 8)]:
+            q = rng.standard_normal((k, n_heads, hd)).astype(np.float32)
+            k_ = rng.standard_normal((k, n_kv, hd)).astype(np.float32)
+            v = rng.standard_normal((k, n_kv, hd)).astype(np.float32)
+            K = rng.standard_normal((T, n_kv, hd)).astype(np.float32)
+            V = rng.standard_normal((T, n_kv, hd)).astype(np.float32)
+            o_ref, Kr, Vr = attn_token_by_token(q, k_, v, K, V, pos, n_heads, n_kv, hd)
+            o_new, Kc, Vc = attn_chunk(q, k_, v, K, V, pos, n_heads, n_kv, hd)
+            eo = float(np.max(np.abs(o_ref - o_new)))
+            eK = float(np.max(np.abs(Kr - Kc)))
+            eV = float(np.max(np.abs(Vr - Vc)))
+            worst = max(worst, eo, eK, eV)
+            cases.append((n_heads, n_kv, hd, T, pos, k, eo, eK, eV))
+
+    # the conv window across a chunk boundary
+    conv_cases = []
+    for conv, dim, k in [(4, 16, 4), (4, 16, 16), (3, 8, 8), (5, 32, 6)]:
+        hist = rng.standard_normal((conv - 1, dim)).astype(np.float32)
+        chunk = rng.standard_normal((k, dim)).astype(np.float32)
+        window, new_hist = conv_window(hist, chunk)
+        # the token-by-token window for each row of the chunk
+        both = np.concatenate([hist, chunk], 0)
+        ref = np.stack([both[j:j + conv] for j in range(k)], 0)
+        e = float(np.max(np.abs(window - ref)))
+        eh = float(np.max(np.abs(new_hist - both[-(conv - 1):])))
+        worst = max(worst, e, eh)
+        conv_cases.append((conv, dim, k, e, eh))
+
+    if verbose:
+        print(f"{'heads':>6} {'kv':>4} {'hd':>4} {'T':>5} {'pos':>5} {'k':>4} "
+              f"{'max|do|':>12} {'max|dK|':>12} {'max|dV|':>12}")
+        for nh, nkv, hd, T, pos, k, eo, eK, eV in cases:
+            print(f"{nh:>6} {nkv:>4} {hd:>4} {T:>5} {pos:>5} {k:>4} "
+                  f"{eo:>12.3e} {eK:>12.3e} {eV:>12.3e}")
+        print(f"\n{'conv':>6} {'dim':>5} {'k':>4} {'max|dwin|':>12} {'max|dhist|':>12}")
+        for conv, dim, k, e, eh in conv_cases:
+            print(f"{conv:>6} {dim:>5} {k:>4} {e:>12.3e} {eh:>12.3e}")
+        print(f"\nworst absolute error: {worst:.3e}")
+        print("PASS" if worst < 2e-4 else "FAIL")
+    return worst < 2e-4
+
+
 if __name__ == "__main__":
     ok = test_equivalence()
+    ok = test_attention_and_conv() and ok
     raise SystemExit(0 if ok else 1)
