@@ -903,19 +903,27 @@ def chunk_check(state_dt, k):
     # that is what the model's own generation loop does, and feeding the
     # hidden state instead is a different (wrong) model.
     arg = []
+    t_seq = time.perf_counter()
     for i in range(k):
         nxt = int(jnp.argmax(logits_b(x, OUT_RAW), axis=0)[0])
         arg.append(nxt)
         x = jnp.broadcast_to(embed(nxt), (1, NEMB))
         x, S_t, C_t, K_t, V_t = jitted_step(
             x, jnp.int32(len(ids) + i), S_t, C_t, K_t, V_t, W_t, 1)
+    t_seq = time.perf_counter() - t_seq
 
-    # the same k tokens, in one chunked pass
+    # the same k tokens, in one chunked pass -- and the time it takes, which is
+    # the number the whole mechanism rests on: the weights are paid once for
+    # the chunk instead of once per token.
+    t_chunk = time.perf_counter()
     xc = jnp.stack([embed(int(t)) for t in arg])
     x2, S2, C2, K2, V2 = jitted_step(
         xc, jnp.int32(len(ids)), S_p, C_p, K_p, V_p, W_t, k)
     lg_c = logits_b(x2, OUT_RAW)
     arg_c = [int(v) for v in np.asarray(jnp.argmax(lg_c, axis=0))]
+    t_chunk = time.perf_counter() - t_chunk
+    print(f"chunk pass {t_chunk * 1000:.0f} ms for {k} tokens vs "
+          f"{t_seq * 1000:.0f} ms sequential ({t_seq / max(t_chunk, 1e-9):.1f}x)")
 
     # the chunk's position j is the sequential path's position j+1
     pairs = list(zip(arg[1:], arg_c[:-1]))
@@ -929,6 +937,9 @@ def chunk_check(state_dt, k):
         "agree": agree,
         "first_disagreement": first_bad,
         "exact": agree == len(pairs),
+        "chunk_pass_ms": round(t_chunk * 1000, 1),
+        "sequential_ms": round(t_seq * 1000, 1),
+        "speedup_x": round(t_seq / max(t_chunk, 1e-9), 2),
     }
     print(f"chunk check: {agree}/{len(pairs)} argmaxes agree "
           f"(first disagreement at {first_bad})")
