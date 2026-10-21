@@ -143,7 +143,7 @@ naming:
 JAX form).
 
 ```text
-worst absolute error over 48 cases: 7.153e-07      <- the gated-delta recurrence
+worst absolute error over 60 cases: 2.086e-06      <- the gated-delta recurrence
 PASS
  heads   kv   hd     T   pos    k      max|do|      max|dK|      max|dV|
     24    4   32    64    40    4    0.000e+00    0.000e+00    0.000e+00
@@ -154,14 +154,19 @@ PASS
      4    16   16    0.000e+00    0.000e+00
 ```
 
-**The recurrence: 48 cases** — chunk lengths 1-32, four decay profiles (none /
-mild / strong / per-head), numpy and JAX, outputs and final state. The worst
-absolute difference is **7.15e-07**, which is fp32 rounding, not a modelling
-difference.
+**The recurrence: 60 cases** — chunk lengths 1-32, five decay profiles (none /
+mild / strong / per-head / **underflowing**), numpy and JAX, outputs and final
+state. The worst absolute difference is **2.086e-06**, which is fp32 rounding,
+not a modelling difference. The underflowing profile is the one that matters:
+the model's decay is strong enough that the cumulative product flushes to zero
+inside a chunk, and the ratio `A_t/A_s` cannot be recovered from a product that
+has already underflowed. The fix is the log domain — accumulate the log decay
+and take the ratio as `exp(cum_t - cum_s)` — and without it the recurrence and
+its chunked form disagree by **0.97**, not by rounding.
 
-**The attention and the conv: bit-identical** (0.0 everywhere). The chunked
-attention is the same arithmetic with the k queries in one pass, so it *must*
-be bit-identical; it is not, one of three bugs shows up:
+**The attention and the conv: bit-identical** (0.0 everywhere, 12 cases). The
+chunked attention is the same arithmetic with the k queries in one pass, so it
+*must* be bit-identical; it is not, one of three bugs shows up:
 
 1. **The head axis must not be folded into the time axis.** The query's heads
    are `h*G+g`, so a chunk of k tokens is `(k, n_heads, hd)` and splitting the
