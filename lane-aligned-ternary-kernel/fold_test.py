@@ -78,6 +78,14 @@ def decode_levels(b):
     return np.concatenate([t80, t40, h8], 0)   # (128, TC), values in {0,1,2}
 
 
+def to_bf16(a):
+    """Round to bfloat16 (round-to-nearest-even) through the float32 bits."""
+    u = a.astype(np.float32).view(np.uint32)
+    r = ((u >> 16) & 1) + 0x7FFF
+    u = (u + r) & 0xFFFF0000
+    return u.view(np.float32)
+
+
 def test_fold(seed=20261021, B=4, TC=16, verbose=True):
     """The folded projection must equal the shipped one to fp32 rounding."""
     rng = np.random.default_rng(seed)
@@ -101,13 +109,6 @@ def test_fold(seed=20261021, B=4, TC=16, verbose=True):
     rel = err / scale if scale else 0.0
 
     # the same thing in bf16, the way the MXU sees it
-    def to_bf16(a):
-        # round-to-nearest-even through the float32 bit pattern
-        u = a.astype(np.float32).view(np.uint32)
-        r = ((u >> 16) & 1) + 0x7FFF
-        u = (u + r) & 0xFFFF0000
-        return u.view(np.float32)
-
     w_ship_bf = to_bf16((levels - 1).astype(np.float32) * sc)
     w_fold_bf = to_bf16(levels)
     out_ship_bf = x @ w_ship_bf
@@ -125,6 +126,50 @@ def test_fold(seed=20261021, B=4, TC=16, verbose=True):
     return rel < 1e-5
 
 
+def test_fold3_operand():
+    """FOLD=3's MXU operand must be BIT-IDENTICAL to the shipped path's.
+
+    The Pallas docs are explicit: "Even if you pass 32-bit operands to a
+    matrix multiplication, they will be rounded to bfloat16 unless float32
+    precision is requested." The shipped path hands the MXU an fp32 tile, so
+    the hardware rounds it before the MXU sees it, and what the MXU actually
+    gets is bf16((level-1)*sc).
+
+    Because level-1 is in {-1, 0, 1}, multiplying by it is exact, so
+    bf16((level-1)*sc) == (level-1)*bf16(sc) -- which is what FOLD=3 computes
+    with the scale pre-rounded and the tile kept in bf16 throughout.
+
+    The claim FOLD=2's text matched the shipped path's (the fp32 oracle
+    agreed with both) already showed the rounding is a single bf16 rounding
+    rather than a 3-pass scheme. This test shows the operands are equal
+    bit-for-bit.
+    """
+    rng = np.random.default_rng(4242)
+    b = rng.integers(0, 256, size=(26, 16), dtype=np.int64)
+    levels = decode_levels(b).astype(np.float32)
+    sc = rng.standard_normal((1, 16)).astype(np.float32)
+
+    # the shipped path: an fp32 tile, which the hardware rounds to bf16
+    w_ship_fp32 = (levels - 1).astype(np.float32) * sc
+    w_ship = to_bf16(w_ship_fp32)
+
+    # FOLD=3: the scale pre-rounded to bf16, the multiply in bf16
+    sc_bf16 = to_bf16(sc)
+    w_fold3 = to_bf16(to_bf16(levels - 1) * sc_bf16)
+
+    # and FOLD=2, for reference: the product in fp32, then rounded
+    w_fold2 = to_bf16((levels - 1) * sc)
+
+    same3 = np.array_equal(w_ship.view(np.uint32), w_fold3.view(np.uint32))
+    same2 = np.array_equal(w_ship.view(np.uint32), w_fold2.view(np.uint32))
+    diff = int(np.sum(w_ship.view(np.uint32) != w_fold3.view(np.uint32)))
+    print(f"shipped operand (bf16 of the fp32 tile) vs FOLD=3: identical={same3} "
+          f"({diff} differing words of {w_ship.size})")
+    print(f"shipped operand vs FOLD=2:                      identical={same2}")
+    return same3 and same2
+
+
 if __name__ == "__main__":
     ok = test_fold()
+    ok = test_fold3_operand() and ok
     raise SystemExit(0 if ok else 1)

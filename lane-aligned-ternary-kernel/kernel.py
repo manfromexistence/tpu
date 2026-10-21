@@ -174,6 +174,7 @@ def _kernel(x_ref, rep_ref, sc_ref, xs_ref, z_ref, acc_ref, *, nsteps):
     # output is bf16, so the cancellation happens at full precision and only
     # the corrected result is rounded.
     xs = xs_ref[...]                                               # (B,)
+    sc_bf16 = sc.astype(jnp.bfloat16)                              # (1, TC)
     # FOLD=1 moves the trit decode's `- 1` and `* sc` off the per-weight path.
     # The decode yields a level in {0,1,2}; the shipped weight is level-1, so
     #     sum_in (level-1) * x * sc = sc * (sum_in level * x - sum_in x)
@@ -197,6 +198,22 @@ def _kernel(x_ref, rep_ref, sc_ref, xs_ref, z_ref, acc_ref, *, nsteps):
     elif FOLD == 2:
         def _w(g):
             return ((g - 1) * sc).astype(jnp.bfloat16)
+    elif FOLD == 3:
+        # The scale pre-rounded to bf16, and the tile kept in bf16 throughout.
+        #
+        # The Pallas docs are explicit: "Even if you pass 32-bit operands to a
+        # matrix multiplication, they will be rounded to bfloat16 unless
+        # float32 precision is requested." So the shipped path's fp32 tile is
+        # rounded by the hardware before the MXU sees it, and the operand the
+        # MXU actually gets is bf16((level-1)*sc) -- which, because level-1 is
+        # in {-1,0,1}, equals (level-1)*bf16(sc) exactly.
+        #
+        # Pre-rounding the scale to bf16 and multiplying in bf16 therefore
+        # produces a BIT-IDENTICAL operand, while the tile never widens to
+        # fp32: the concat stays int16, the level becomes bf16, and the scale
+        # multiply is bf16 x bf16 -> bf16.
+        def _w(g):
+            return (g - 1).astype(jnp.bfloat16) * sc_bf16
     else:
         def _w(g):
             return (g - 1).astype(jnp.bfloat16) * sc
