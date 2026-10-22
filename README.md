@@ -157,21 +157,35 @@ out: launch count (36 % fewer launches moved the step 0.5 %), HBM bandwidth
 | 129.9 ms (`FOLD=2`, the same model) | 23.1 | 30.8 | 46.2 | 53.9 |
 | 119.5 ms (`FOLD=1`, a different model) | 25.1 | 33.4 | 50.2 | 58.6 |
 
-Inferact's open-source megakernel for **Qwen3.8-27B** -- the same base
-architecture as Bonsai 2 -- reports **3-6 accepted tokens per step** with its
-DFlash2 draft, and 1,515 tok/s at acceptance length 6 on 4x TPU v7 [sourced:
-`inferact.ai/blog/tpu-megakernels`, `github.com/Inferact/tpu-megakernels`;
-their hardware, not ours]. So 50 tok/s on one v5e-1 needs the **top of the
-published acceptance range**, and every other term in the table above is a
-measured number.
+**The published acceptance for this exact base architecture** (the DFlash2 draft
+card, all three drafters proposing seven draft tokens per step): DFlash 2
+**4.10-5.46**, MTP 3.74-5.02, DSpark 3.01-4.36 [sourced:
+`huggingface.co/z-lab/Qwen3.8-27B-DFlash2`]. A chunked pass costs about what one
+sequential step costs -- the weights are unpacked once for the whole chunk -- so
+8 verified tokens per 135 ms is 59 tok/s if every token were accepted, and the
+published acceptance turns that into **30.6-40.7 tok/s** on the shipped path and
+**34.3-45.7 tok/s** with `FOLD=3`. So 50 tok/s needs the acceptance at the top
+of that range **and** a pass at 109 ms or less: `FOLD=3` reaches 45.7, and the
+last ~10 % is the unpack -- which is exactly what `TPU-08`'s 2-bit `PQ2_0` port
+is for. **The honest range for the parts that exist is 30-46 tok/s**; 50 is
+reachable but not reached.
 
 **The draft is a download, not a graft.** Two candidates, both for this base
 architecture:
 
-| draft | size | what it is |
+| draft | size | acceptance length (completed tokens per verification step) |
 | --- | --- | --- |
-| `z-lab/Qwen3.8-27B-DFlash2` | 1.92 B parameters, 3.58 GB | the block-diffusion drafter Inferact's Qwen megakernel uses; base model `Qwen/Qwen3.8-27B` |
-| `sudoingx/Ternary-Bonsai-2-27B-PTQ1_0-MTP-GGUF` | 5.87 GB (the `mtp-lean` file) / 6.53 GB (the full one) | this model's own MTP head, in the same ternary format |
+| `z-lab/Qwen3.8-27B-DFlash2` | 1.92 B parameters, 3.85 GB | **4.10 - 5.46** -- GSM8K 5.46, MATH-500 5.28, MBPP 4.79, HumanEval 4.39, MT-Bench 4.10 [sourced: the draft card] |
+| `sudoingx/Ternary-Bonsai-2-27B-PTQ1_0-MTP-GGUF` | 5.87 GB (the `mtp-lean` file) / 6.53 GB (the full one) | 3.74 - 5.02 for the same target's built-in MTP [sourced: the same table] |
+| a community DSpark drafter | -- | 3.01 - 4.36 [sourced: the same table] |
+
+The DFlash2 draft is only **five layers** (hidden 5120, the same vocab as our
+target, sliding window 2048) reading the target's hidden states at layers
+5/19/33/47/61, with a block-diffusion selector and two-tap dynamic convolutions.
+`Inferact/tpu-megakernels` is **Apache-2.0** and ships `qwen/dflash.py` -- 66 KB
+of JAX/Pallas: the DFlash2 reference equations and the fused draft and
+speculation kernels. Porting it is a bounded piece of work against a published
+reference.
 
 The MTP head is the memory-friendly one: the target's peak is already 14.55 GiB
 of the 15.75 GiB budget, so a 3.58 GB draft in the same process does not fit and
