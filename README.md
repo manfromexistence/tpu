@@ -255,6 +255,7 @@ the names now say what each folder is.
 | --- | --- |
 | `lane-aligned-ternary-kernel/` | **the kernel**: lane-aligned tiles, the fused 64-layer step, the grouped attention, the KV-dtype knob, the decode fold, the chunked path. 36 receipts |
 | `multi-token-verification/` | the chunked gated-delta recurrence, the chunked attention and the conv window: the derivation, the CPU contract (60 + 12 cases), and the exactness gate |
+| `dflash2-draft/` | the drafter for the 50 tok/s path: the DFlash2 block-diffusion draft, ported from the Apache-2.0 reference and running on CPU. Five layers, the target's own embedding and LM head, and the published acceptance length (4.10-5.46) that decides the project |
 | `projection-cost-breakdown/` | the cost model -- where a projection's time goes (the decode is 82 % of it, and it is data movement) |
 | `pallas-matmul-findings/` | the Pallas API facts and the nine proof scripts (BlockSpec index maps, the grid rules, the `Bad rhs type` fix) |
 | `reference-forward-pass/` | the correctness proof -- the from-scratch 27B forward pass, and the bugs it found. **Also the oracle**: it is the only thing that can say which of two texts is the model's |
